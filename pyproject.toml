@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "buer"
+version = "0.2.0a0"
+description = "Reliability layer for AI coding agents — alert on drift, assist on framing. Grounded in SDT."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Xiaozhou Zeng", email = "leozeng@gmail.com" }
+]
+keywords = ["mcp", "ai-agents", "reliability", "monitoring", "sdt", "static-analysis"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+# Dependencies confirmed against v2.0 design:
+# - mcp (FastMCP): MCP server + hooks
+# - pydantic: typed models for signals/incidents
+# - tree-sitter + language bindings: static analysis for call graph / dataflow (§4.2a)
+# NOTE: NO anthropic SDK — BUER does structural analysis only, never calls an LLM
+#       to understand semantics (v2.0 cut σ / semantic understanding deliberately).
+dependencies = [
+    "mcp>=1.0",
+    "pydantic>=2.0",
+    "tree-sitter>=0.25,<0.26",
+    "tree-sitter-python>=0.23",
+    "tree-sitter-javascript>=0.23",
+    "tree-sitter-typescript>=0.23",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.0",
+]
+
+[project.scripts]
+buer-server = "buer.mcp.server:main"
+
+[project.urls]
+Homepage = "https://github.com/zengxzh/buer"
+Repository = "https://github.com/zengxzh/buer"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["buer*"]
+exclude = ["tests*", "docs*"]

@@ -1,0 +1,21 @@
+[Unit]
+Description=BUER MCP server (code drift monitoring + cost tracking)
+After=network.target
+
+[Service]
+Type=simple
+# Replace YOUR_USERNAME with your actual username (run: whoami)
+User=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME
+
+# Replace BUER_EXEC with the absolute path to buer-server (run: which buer-server)
+# Example: /home/YOUR_USERNAME/.local/bin/buer-server
+# If using a virtualenv: /path/to/venv/bin/buer-server
+ExecStart=BUER_EXEC --host 127.0.0.1 --port 7777 --db /home/YOUR_USERNAME/.buer/store.sqlite
+
+# Restart on crash only (not on clean exit — e.g. manual stop)
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
