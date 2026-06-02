@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "buer"
 version = "0.2.0a0"
-description = "Reliability layer for AI coding agents — alert on drift, assist on framing. Grounded in SDT."
+description = "Local guardrail for AI coding agents. Catches loops, regressions, and test-tampering by watching what the agent does to your code — not its chat logs."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [
     { name = "Xiaozhou Zeng", email = "leozeng@gmail.com" }
 ]
-keywords = ["mcp", "ai-agents", "reliability", "monitoring", "sdt", "static-analysis"]
+keywords = ["mcp", "ai-agents", "reliability", "monitoring", "static-analysis"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
