@@ -19,6 +19,7 @@ import pytest
 
 from buer.store import Store
 from buer import signals
+from buer.signals import _test_define_matches_testcase
 
 ROOT = "/test"
 FILE = "/test/f.py"           # production file
@@ -485,6 +486,44 @@ class TestWindowCondition3:
         affected = _test_define_affected(store, pid)
         signals.detect_test_tampering(store, pid, affected, ROOT, EMPTY_IDX)
         assert len(_open_incs(store, pid)) == 1
+
+
+# ---------------------------------------------------------------------------
+# _test_define_matches_testcase — unit tests (Bug 3 fix)
+# ---------------------------------------------------------------------------
+
+class TestDefineMatchesTestcase:
+    def test_class_method_matches(self):
+        """Bug 3: qualified class-method define matches its testcase."""
+        assert _test_define_matches_testcase(
+            "TestJWT.test_decodes_valid_jwt",
+            "tests.test_api_jwt.TestJWT",
+            "test_decodes_valid_jwt",
+        ) is True
+
+    def test_cross_class_same_name_no_match(self):
+        """TestA.test_init must NOT match TestB::test_init (cross-class collision guard)."""
+        assert _test_define_matches_testcase(
+            "TestA.test_init",
+            "tests.TestB",
+            "test_init",
+        ) is False
+
+    def test_module_level_function_matches(self):
+        """Module-level test function: define name == testcase name."""
+        assert _test_define_matches_testcase(
+            "test_decodes_valid_jwt",
+            "tests.test_api_jwt",
+            "test_decodes_valid_jwt",
+        ) is True
+
+    def test_define_is_test_class_matches(self):
+        """Define is the test class itself (rare but valid)."""
+        assert _test_define_matches_testcase(
+            "TestJWT",
+            "tests.test_api_jwt.TestJWT",
+            "test_decodes_valid_jwt",
+        ) is True
 
 
 # ---------------------------------------------------------------------------

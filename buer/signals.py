@@ -670,11 +670,19 @@ def _test_define_matches_testcase(define_name: str, classname: str, name: str) -
 
     Matches on:
       - exact name match (define "test_fn" ↔ testcase name "test_fn")
-      - simple classname (define "TestF" ↔ classname "tests.TestF")
-      - full classname (define "tests.TestF" ↔ classname "tests.TestF")
+      - class method: BOTH class segment and method segment match
+        (define "TestJWT.test_x" ↔ classname "tests.TestJWT", name "test_x").
+        Requires both parts to match to prevent cross-class collisions
+        (TestA.test_init must not match TestB::test_init).
+      - define is the test class itself (define "TestF" or "tests.TestF")
     """
     cls_simple = classname.rsplit(".", 1)[-1]
-    return define_name in (name, classname, cls_simple)
+    if define_name == name:
+        return True
+    parts = define_name.split(".")
+    if len(parts) >= 2 and parts[-1] == name and parts[-2] == cls_simple:
+        return True
+    return define_name in (classname, cls_simple)
 
 
 # ── detect_test_tampering (§2.7) ─────────────────────────────────────────────
