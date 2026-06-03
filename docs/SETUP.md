@@ -1,272 +1,247 @@
 # BUER Setup
 
-How to run the BUER server and wire it into Claude Code.
+How to install BUER, keep it running, and wire it into Claude Code.
 
-## Server Startup & Claude Code Hook Config
+## Two ways to run BUER (read this first)
 
-### Starting the server
+BUER works in two modes, and they do different things. Knowing the difference avoids the
+common surprise of "I added it from the registry but nothing happens."
+
+- **MCP Registry / stdio mode** — when you add BUER from an MCP registry, your client
+  (Claude Code, Cursor, etc.) launches it as a stdio MCP server. This exposes the *query
+  tools* only: `check_drift`, `get_user_alerts`, `savings_report`, `set_notification_level`.
+  The agent can ask BUER things, but BUER is **not** watching edits. This mode alone does
+  **not** give you drift monitoring.
+- **HTTP server + hooks mode** — the core value (catching loops, regressions, test-tampering
+  on every edit) runs over BUER's HTTP endpoints, fed by Claude Code hooks. This needs a
+  persistent BUER server and the hook config below. **This is the mode you want for monitoring.**
+
+The two are complementary: keep the HTTP server running for monitoring; the MCP query tools
+are a bonus. The rest of this guide sets up the HTTP + hooks mode.
+
+---
+
+## 1. Install
 
 ```bash
-# From the buer/ repo root:
-python -m buer.mcp.server --host 127.0.0.1 --port 7777 --db .buer/store.sqlite
-
-# Or via the installed console script (after pip install -e .):
-buer-server --host 127.0.0.1 --port 7777 --db .buer/store.sqlite
-
-# Transport options: streamable-http (default), sse, stdio
+pip install buer
+# or, isolated:
+pipx install buer
 ```
 
-The server pre-warms the SQLite store on startup (creates schema if missing).  
-Default DB path if `--db` omitted: `.buer/store.sqlite` (relative to cwd, or override with `BUER_DB` env var).
+This gives you the `buer-server` command. Confirm the path (you'll need it for the service):
 
-### Wiring Claude Code hooks
-
-> **Prerequisite:** the hook commands below use `jq` to build JSON payloads.
-> Install it first if needed: `sudo apt install jq` (Debian/Ubuntu) or
-> `brew install jq` (macOS).
-
-> **Platform:** the hook commands use shell syntax (`$(...)`, here-strings) and assume
-> Linux or macOS. On Windows, run BUER and configure hooks inside WSL (Windows Subsystem
-> for Linux); the native Windows shell is not supported for these hook commands.
-
-Add to `.claude/settings.json` in the project being monitored (not inside `buer/` itself):
-
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "curl -s -X POST http://127.0.0.1:7777/buer/session-start -H 'Content-Type: application/json' -d @- <<< \"$(jq -n --arg cwd \"$PWD\" --arg session_id \"$CLAUDE_CODE_SESSION_ID\" --arg source \"startup\" '{cwd:$cwd,session_id:$session_id,source:$source}')\""
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write|MultiEdit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "curl -s -X POST http://127.0.0.1:7777/buer/post-edit -H 'Content-Type: application/json' -d @- <<< \"$(jq -n --arg cwd \"$PWD\" --arg session_id \"$CLAUDE_CODE_SESSION_ID\" --argjson tool_input \"$TOOL_INPUT\" '{cwd:$cwd,session_id:$session_id,tool_input:$tool_input}')\""
-          }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "curl -s -X POST http://127.0.0.1:7777/buer/post-bash -H 'Content-Type: application/json' -d @- <<< \"$(jq -n --arg cwd \"$PWD\" --argjson tool_input \"$TOOL_INPUT\" --argjson tool_response \"$TOOL_RESPONSE\" '{cwd:$cwd,tool_input:$tool_input,tool_response:$tool_response}')\""
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Read",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "curl -s -X POST http://127.0.0.1:7777/buer/post-read -H 'Content-Type: application/json' -d @- <<< \"$(jq -n --arg cwd \"$PWD\" --argjson tool_input \"$TOOL_INPUT\" '{cwd:$cwd,tool_input:$tool_input}')\""
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "curl -s -X POST http://127.0.0.1:7777/buer/stop -H 'Content-Type: application/json' -d @- <<< \"$(jq -n --arg cwd \"$PWD\" --arg session_id \"$CLAUDE_CODE_SESSION_ID\" '{cwd:$cwd,session_id:$session_id}')\""
-          }
-        ]
-      }
-    ]
-  }
-}
+```bash
+which buer-server     # e.g. ~/.local/bin/buer-server
 ```
 
-Or use the MCP transport (`--transport streamable-http`) and add BUER as an MCP server in `.claude/mcp.json`:
+## 2. Start the server
 
-```json
-{
-  "mcpServers": {
-    "buer": {
-      "type": "http",
-      "url": "http://127.0.0.1:7777/mcp"
-    }
-  }
-}
+```bash
+buer-server --host 127.0.0.1 --port 7777 --db ~/.buer/store.sqlite
 ```
 
-**Quick smoke test** — after server starts:
+Note the DB path: `~/.buer/store.sqlite`, a fixed per-user location, **not** a per-project
+`.buer/`. A persistent server has no project working directory, so it uses one shared store
+and tells projects apart by the `cwd` each hook sends. The store schema is created on first start.
+
+Quick check once it's up:
 
 ```bash
 curl -s http://127.0.0.1:7777/buer/health | python3 -m json.tool
 ```
 
+## 3. Keep it running (recommended)
+
+BUER must run continuously to monitor edits and collect cost data. Use your platform's
+user-level service manager — **no root / admin needed**, and it survives reboots and crashes.
+
+### Linux (systemd user service)
+
+Create `~/.config/systemd/user/buer.service` (replace the `ExecStart` path with your
+`which buer-server` result):
+
+```ini
+[Unit]
+Description=BUER — AI coding-agent guardrail
+
+[Service]
+ExecStart=%h/.local/bin/buer-server --host 127.0.0.1 --port 7777 --db %h/.buer/store.sqlite
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now buer
+loginctl enable-linger "$USER"   # start on boot without an active login session
+systemctl --user status buer     # confirm Active: running
+```
+
+### macOS (launchd LaunchAgent)
+
+Create `~/Library/LaunchAgents/io.github.zengxzh.buer.plist` (replace the `buer-server`
+path with your `which buer-server` result):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>io.github.zengxzh.buer</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOU/.local/bin/buer-server</string>
+    <string>--host</string><string>127.0.0.1</string>
+    <string>--port</string><string>7777</string>
+    <string>--db</string><string>/Users/YOU/.buer/store.sqlite</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict>
+</plist>
+```
+
+```bash
+launchctl load -w ~/Library/LaunchAgents/io.github.zengxzh.buer.plist
+launchctl list | grep buer       # confirm it's loaded
+```
+
+### Windows (Task Scheduler, runs at logon)
+
+In PowerShell (replace the path with your `where buer-server` result; `pythonw` avoids a
+console window):
+
+```powershell
+schtasks /create /tn "BUER" /sc onlogon /tr ^
+  "buer-server --host 127.0.0.1 --port 7777 --db %USERPROFILE%\.buer\store.sqlite"
+```
+
+Windows works natively here — no WSL required, because the hooks below use HTTP, not shell
+commands.
+
+---
+
+## 4. Wire Claude Code hooks (HTTP)
+
+Add to `.claude/settings.json` in the project you want monitored (not inside `buer/` itself).
+These are **HTTP hooks**: Claude Code sends the native event JSON straight to BUER's endpoints
+as the POST body. No `curl`, no `jq`, no shell — so this is identical on Linux, macOS, and Windows.
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "http", "url": "http://127.0.0.1:7777/buer/session-start" }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Edit|Write|MultiEdit", "hooks": [{ "type": "http", "url": "http://127.0.0.1:7777/buer/post-edit" }] },
+      { "matcher": "Bash",                 "hooks": [{ "type": "http", "url": "http://127.0.0.1:7777/buer/post-bash" }] },
+      { "matcher": "Read",                 "hooks": [{ "type": "http", "url": "http://127.0.0.1:7777/buer/post-read" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "http", "url": "http://127.0.0.1:7777/buer/stop" }] }
+    ]
+  }
+}
+```
+
+> **Why HTTP and not a curl command?** Earlier versions of this guide built the payload with
+> `jq` from environment variables. Claude Code 2.1+ no longer sets those variables — it passes
+> the event as JSON on stdin (command hooks) or as the POST body (HTTP hooks). HTTP hooks need
+> no shell tooling, work on every OS, and BUER's endpoints parse Claude Code's native event
+> JSON directly. The old `jq`-based config silently produces empty payloads on current
+> Claude Code and should be replaced with the above.
+
+Optionally also expose the query tools over MCP, in `.claude/mcp.json`:
+
+```json
+{ "mcpServers": { "buer": { "type": "http", "url": "http://127.0.0.1:7777/mcp" } } }
+```
+
+---
+
+## 5. How alerts reach you
+
+Understanding this helps set expectations honestly.
+
+- **Stop hook (primary, reliable).** When the agent tries to finish a turn, BUER's Stop hook
+  returns a `decision:block` with the pending alerts as the reason. Claude Code injects that
+  reason into the agent's context and asks it to address the issues before stopping. This is
+  the main delivery path: alerts surface at the end of the turn they occurred in. The Stop
+  hook fires at most once per stretch of work (an anti-loop guard), so it won't trap your session.
+- **Notification level (your tuning knob).** See the section below. Controls how many alerts
+  you get; integrity alerts (cheating, scope-violation) always surface regardless.
+- **Pull, any time.** Ask in plain language ("any BUER alerts?") and the agent calls
+  `get_user_alerts`, or call it directly.
+- **Not real-time per edit.** BUER does **not** rely on injecting an alert immediately after
+  each edit. Claude Code's post-edit context-injection (`additionalContext`) currently has
+  open reliability bugs, so depending on it would be fragile. Alerts are delivered at turn end
+  via Stop instead — slightly delayed, but dependable.
 
 ---
 
 ## Precise Test–Define Association (opt-in)
 
 By default, BUER associates test cases with production defines using **heuristic matching**:
-function-name similarity (e.g. `test_parse_query_string` → `parse_query_string`) plus
-file-stem matching (e.g. `test_urlutils.py` covers `urlutils.py` defines). This works
-without any extra configuration and is sufficient for most signal detection.
+function-name similarity (`test_parse_query_string` → `parse_query_string`) plus file-stem
+matching. This needs no configuration and is enough for most signal detection.
 
-You can upgrade to **precise tier** by running pytest with dynamic context tracing.
-Precise tier reads which lines each test actually executed and uses that to create
-exact test↔define mappings — no naming guesswork.
-
-### How to enable
-
-Run pytest with coverage context tracing enabled (requires the `coverage` package,
-already a dependency of `pytest-cov`):
+You can upgrade to **precise tier** by running pytest with dynamic context tracing, which reads
+which lines each test actually executed and builds exact test↔define mappings:
 
 ```bash
-pytest --cov=src --cov-context=test --cov-report=
-# or with an explicit output path:
 pytest --cov=. --cov-context=test --cov-report= --junitxml=junit.xml
 ```
 
-This writes a `.coverage` SQLite file at the project root. BUER reads it automatically
-on the next reconcile after a file edit — no further configuration needed.
+This writes a `.coverage` SQLite file at the project root; BUER reads it automatically on the
+next reconcile. Run `--junitxml` and `--cov-context=test` in the same invocation (JUnit is
+ingested first to build the test-case index).
 
-> **Order matters:** JUnit XML must be ingested first (BUER uses it to build the test_case
-> index). Run pytest with both `--junitxml` and `--cov-context=test` in the same invocation.
+Precise tier is **narrower** — it links a test to a define only when the test executed lines
+inside it — which cuts false positives in `regression` and `test_tampering`. The `test_tier`
+field in incident details records which tier fired (`"precise"` / `"heuristic"`).
 
-### What changes with precise tier
-
-| Scenario | Heuristic tier | Precise tier |
-|---|---|---|
-| `test_foo` → `foo` (name match) | ✓ matched | ✓ matched (if lines covered) |
-| `test_bar` → `foo` (no name match, same file) | ✓ matched (broad) | ✗ excluded (not covered) |
-| `test_baz` in a different file | ✗ excluded | ✓ included (if lines covered) |
-
-Precise tier is **narrower**: it only links a test to a define when the test actually
-executed lines inside that define. This reduces false positives in `regression` (an
-unrelated test failing doesn't implicate your define) and in `test_tampering` condition 3
-(the coverage check is authoritative rather than inferred from naming).
-
-The `test_tier` field in incident details records which tier triggered the signal
-(`"precise"` or `"heuristic"`).
-
-### Known boundaries
-
-Precise tier works reliably when:
-
-- pytest is used with `pytest-cov` and the standard `--cov-context=test` flag
-- The project follows standard pytest rootdir layout: coverage file paths and JUnit
-  classnames both derive from the same root, so the dotted-module form of the coverage
-  path (`tests/test_urlutils.py` → `tests.test_urlutils`) matches the JUnit classname
-  (`tests.test_urlutils.TestParseQueryString`)
-
-Precise tier falls back to heuristic silently when:
-
-- The `coverage` package is not installed
-- `.coverage` is absent (pytest was run without `--cov-context=test`)
-- `src` layout or custom `pythonpath` / `rootdir` causes the coverage path → dotted-module
-  conversion to produce a different string than the JUnit classname
-- JUnit classnames were customized (e.g. via `junit_family` or a custom reporter)
-
-In all fallback cases, BUER continues working via heuristic tier — signals fire normally,
-just with broader (less precise) test associations. **Precise tier is an enhancement,
-not a prerequisite.**
+**Boundaries.** Precise tier needs standard pytest rootdir layout (so the dotted-module form of
+the coverage path matches the JUnit classname). It falls back to heuristic **silently** when the
+`coverage` package is absent, `.coverage` is missing, a `src`/custom layout breaks the path↔classname
+match, or JUnit classnames were customized. In every fallback case BUER keeps working via heuristic
+tier — **precise is an enhancement, not a prerequisite.**
 
 ---
 
 ## Notification Level
 
-The only user-facing tuning knob. Controls **how often BUER proactively alerts you** — not how sensitive detection is (BUER always monitors at full sensitivity).
+The single user-facing tuning knob. Controls **how often BUER proactively alerts you** — detection
+always runs at full sensitivity.
 
 | Level | Behaviour |
 |-------|-----------|
 | `high` | More alerts, including minor issues. Escalation threshold tightened. |
-| `medium` | **Default.** Balanced — matches current BUER behaviour. Most users stay here. |
-| `low` | Only important alerts. Minor issues reported to agent only, not pushed to you. |
-| `silent` | No proactive user alerts for efficiency issues. See below. |
+| `medium` | **Default.** Balanced. Most users stay here. |
+| `low` | Only important alerts. Minor issues kept in the queue, not pushed to you. |
+| `silent` | No proactive alerts for efficiency issues (see below). |
 
-### Entry point: just tell Claude Code in plain language
+Just tell Claude Code in plain language — "BUER is too noisy, notify me less" → the agent calls
+`set_notification_level(..., "low")`. Or call the MCP tool directly:
+`set_notification_level("/your/project", "low")`.
 
-```
-"BUER is too noisy, notify me less"   → agent calls set_notification_level(..., "low")
-"Silence BUER"                        → set_notification_level(..., "silent")
-"More alerts, be stricter"            → set_notification_level(..., "high")
-"Back to normal"                      → set_notification_level(..., "medium")
-```
-
-Or directly via MCP tool: `set_notification_level("/your/project", "low")`
-
-### Silent mode: "don't interrupt" not "turn off"
-
-`silent` means no proactive push to you — BUER keeps working:
-- **Agent channel works**: post-edit reminders to the agent are unaffected
-- **Pull tools work**: `check_drift` and `get_user_alerts` still return full data
-- **Integrity signals always surface**: test-cheating (`test_tampering`), scope-violations
-  (`boundary_breach`, `task_scope_breach`) escalate even in silent mode — you use BUER
-  partly to catch agent misbehaviour; silencing those defeats the purpose
-
----
-
-## Running BUER as a Service (Recommended)
-
-For long-term cost data collection, BUER must be running continuously. CC telemetry is
-silently discarded if the server is down when a session starts — there is no buffering
-or retry across session boundaries.
-
-A systemd service handles start-on-boot and crash recovery automatically.
-
-### Install
-
-1. **Edit `deploy/buer.service`**: replace `YOUR_USERNAME` and `BUER_EXEC` with your
-   actual username and the absolute path to `buer-server`:
-   ```bash
-   whoami                  # → YOUR_USERNAME
-   which buer-server       # → BUER_EXEC  (e.g. /home/youruser/.local/bin/buer-server)
-   ```
-
-2. **Install and start**:
-   ```bash
-   sudo cp deploy/buer.service /etc/systemd/system/buer.service
-   sudo systemctl daemon-reload
-   sudo systemctl enable buer    # start on boot
-   sudo systemctl start buer
-   systemctl status buer         # confirm Active: running
-   ```
-
-3. **Verify it's accepting metrics**:
-   ```bash
-   nc -z 127.0.0.1 7777 && echo "up"
-   curl -s http://127.0.0.1:7777/buer/health | python3 -m json.tool
-   ```
-
-### Logs
-
-```bash
-journalctl -u buer -f              # live tail
-journalctl -u buer --since today
-```
-
-### Why the CC session must start after BUER
-
-OTLP SDK is initialised once at session start and points to the configured endpoint for
-the life of that session. If BUER is down when CC starts, that session's telemetry is
-routed to a closed port and permanently lost. Start BUER first, then start CC.
+**`silent` means "don't interrupt", not "turn off".** Pull tools (`check_drift`, `get_user_alerts`)
+still return full data, and **integrity signals always surface** — `test_tampering`, `boundary_breach`,
+`task_scope_breach` escalate even in silent mode. You use BUER partly to catch agent misbehaviour;
+silencing those would defeat the purpose.
 
 ---
 
 ## Cost Tracking (optional)
 
-BUER can receive Claude Code telemetry metrics and show a savings report.
-**Privacy**: BUER only receives numeric metrics (tokens/cost) — no conversation content, no code.
+BUER can receive Claude Code telemetry and show a savings report. **Privacy:** only numeric metrics
+(tokens/cost) — no conversation content, no code.
 
-### Configure Claude Code to send telemetry to BUER
-
-Add to `~/.claude/settings.json` (or project-level `.claude/settings.json`):
+Add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -279,31 +254,37 @@ Add to `~/.claude/settings.json` (or project-level `.claude/settings.json`):
 }
 ```
 
-BUER's MCP server must be running (`buer-server --port 7777`) when Claude Code sessions start.
+BUER must be running when a Claude Code session starts (telemetry is dropped if the port is closed
+at session start — start BUER first). View the report via the `savings_report("/path")` MCP tool;
+pass `model="claude-sonnet-4-6"` for an estimate when no telemetry exists yet. The report labels
+measured vs. estimated figures; for Max/Pro subscriptions, cost reflects API-equivalent value.
 
-### View the savings report
+---
 
-Via MCP tool call (in Claude Code with BUER MCP configured):
+## Uninstall / opt out
 
+BUER only changes two things on your machine, both reversible:
+
+**The service** (if you set it up in step 3):
+
+```bash
+# Linux
+systemctl --user disable --now buer
+rm ~/.config/systemd/user/buer.service && systemctl --user daemon-reload
+loginctl disable-linger "$USER"
+
+# macOS
+launchctl unload -w ~/Library/LaunchAgents/io.github.zengxzh.buer.plist
+rm ~/Library/LaunchAgents/io.github.zengxzh.buer.plist
+
+# Windows
+schtasks /delete /tn "BUER" /f
 ```
-savings_report("/path/to/your/project")
-```
 
-Or with model for cost estimation when no telemetry data is available yet:
+**The hooks** — delete the `"hooks"` block you added to `.claude/settings.json` (and the
+`buer` entry in `.claude/mcp.json` if you added it).
 
-```
-savings_report("/path/to/your/project", model="claude-sonnet-4-6")
-```
+**The data** — `rm -rf ~/.buer` removes the local store. Then `pip uninstall buer`.
 
-### Three-tier report output
-
-| State | Output |
-|---|---|
-| OTel data available | Real measured cost + estimated intervention savings |
-| No OTel, model provided | All-estimated from edit rounds × list price |
-| No OTel, no model | Engineering proxy metrics (rounds/interventions), no USD |
-
-The report clearly labels what is measured vs. estimated. Intervention savings are always marked
-`(estimate assumes the loop would have continued; actual may differ)`.
-
-For subscription plans (Max/Pro), cost reflects API-equivalent value, not direct billing.
+BUER never modifies your source code and never writes outside `~/.buer` and the config files
+you edited above.
