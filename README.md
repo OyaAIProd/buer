@@ -1,4 +1,5 @@
 # BUER (不二)
+<!-- mcp-name: io.github.zengxzh/buer -->
 
 *One intent, undivided. BUER.*
 
