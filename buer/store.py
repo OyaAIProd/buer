@@ -1151,6 +1151,21 @@ class Store:
             (project_id, since_seq),
         ).fetchall()
 
+    def production_defines_in_seq_window(
+        self, project_id: int, seq_lo: int, seq_hi: int
+    ) -> list[tuple[str, str]]:
+        """(file_path, define_name) modified in (seq_lo, seq_hi], excluding deletes.
+
+        Caller filters test paths via _is_excluded_path (path policy lives in signals layer).
+        """
+        rows = self.con.execute(
+            """SELECT DISTINCT file_path, define_name FROM determinations
+               WHERE project_id = ? AND seq > ? AND seq <= ?
+                 AND define_name IS NOT NULL AND edit_type != 'delete'""",
+            (project_id, seq_lo, seq_hi),
+        ).fetchall()
+        return [(r["file_path"], r["define_name"]) for r in rows]
+
     def has_open_regression(self, project_id: int) -> bool:
         """True if any regression incident is currently open."""
         row = self.con.execute(

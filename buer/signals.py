@@ -721,13 +721,31 @@ def detect_test_tampering(
         if matching_test_def is None:
             continue
 
-        # Condition 3: no production define covering this testcase was also modified
-        prod_modified = any(
-            tc in _find_test_cases_for_define(store, project_id, fp, dn, root)[0]
-            for fp, dn, _did in prod_affected
+        # Condition 3: window-based production analysis
+        # Window = (red_seq, green_seq]: all production changes between last failure and current pass.
+        green_seq = history[-1]["run_seq"]
+        red_seq = next(
+            h["run_seq"] for h in reversed(history[:-1])
+            if h["status"] in ("failed", "error")
         )
-        if prod_modified:
-            continue
+        win = store.production_defines_in_seq_window(project_id, red_seq, green_seq)
+        prod_win = [(fp, dn) for fp, dn in win if not _is_excluded_path(fp)]
+
+        if prod_win:
+            # Check whether any production define reliably explains the green.
+            # Default: don't fire unless all tier==precise and none cover tc.
+            should_fire = True
+            for fp, dn in prod_win:
+                tcs, tier = _find_test_cases_for_define(store, project_id, fp, dn, root)
+                if tc in tcs:
+                    should_fire = False  # possible real fix
+                    break
+                if tier in ("heuristic", "none"):
+                    should_fire = False  # can't reliably exclude coverage
+                    break
+            if not should_fire:
+                continue
+        # prod_win empty → fire (no production changes can explain the green)
 
         store.write_incident(
             project_id,

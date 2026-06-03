@@ -179,23 +179,24 @@ class TestEscalateDirectly:
 
 class TestTamperingNoFire:
     def test_no_fire_when_prod_also_modified(self):
-        """Production code was also changed → ambiguous, not tampering."""
+        """Production code also changed inside window, linked to tc → not tampering."""
         store = _mem_store()
         pid = _project(store)
         _insert_run(store, pid, 1, "failed")
+
+        # prod define at seq=2 — inside window (1, 2]; coverage links it to TC (precise tier)
+        prod_det = store.insert_determination(
+            pid, seq=2, file_path=FILE, define_name=DEFINE,
+            node_fingerprint="fp_p", edit_type="modify",
+        )
+        store.insert_coverage_entry(pid, TC, f"f.{DEFINE}")
+
         _insert_run(store, pid, 2, "passed")
 
-        # Both test and production modified
         test_det = store.insert_determination(
             pid, seq=10, file_path=TEST_FILE, define_name=TEST_DEFINE,
             node_fingerprint="fp_t", edit_type="modify",
         )
-        prod_det = store.insert_determination(
-            pid, seq=11, file_path=FILE, define_name=DEFINE,
-            node_fingerprint="fp_p", edit_type="modify",
-        )
-        # Add coverage entry so production define is linked to this testcase
-        store.insert_coverage_entry(pid, TC, f"f.{DEFINE}")
         affected = [(TEST_FILE, TEST_DEFINE, test_det), (FILE, DEFINE, prod_det)]
 
         signals.detect_test_tampering(store, pid, affected, ROOT, EMPTY_IDX)
@@ -403,3 +404,84 @@ class TestRegressionComplementarity:
         tam_incs = _open_incs(store, pid)
         assert len(reg_incs) == 1
         assert tam_incs == []
+
+
+# ---------------------------------------------------------------------------
+# Condition 3 window semantics (§2.7 false-positive prevention)
+# ---------------------------------------------------------------------------
+
+class TestWindowCondition3:
+    def test_fires_when_no_prod_in_window(self):
+        """Zero production changes in window → most reliable tampering signal; fires."""
+        store = _mem_store()
+        pid = _project(store)
+        _insert_run(store, pid, 1, "failed")
+        _insert_run(store, pid, 2, "passed")
+        # No production determinations anywhere in window (1, 2]
+        affected = _test_define_affected(store, pid)
+        signals.detect_test_tampering(store, pid, affected, ROOT, EMPTY_IDX)
+        assert len(_open_incs(store, pid)) == 1
+
+    def test_no_fire_cross_round_prod_linked_to_tc(self):
+        """Prod change in a prior cycle inside window, linked to tc → not tampering."""
+        store = _mem_store()
+        pid = _project(store)
+        _insert_run(store, pid, 1, "failed")
+
+        # Prod change at seq=5 — between red (1) and green (10), inside window
+        store.insert_determination(pid, seq=5, file_path=FILE, define_name=DEFINE,
+                                   node_fingerprint="fp_p", edit_type="modify")
+        store.insert_coverage_entry(pid, TC, f"f.{DEFINE}")
+
+        _insert_run(store, pid, 10, "passed")
+
+        affected = _test_define_affected(store, pid, seq=10)
+        signals.detect_test_tampering(store, pid, affected, ROOT, EMPTY_IDX)
+        assert _open_incs(store, pid) == []
+
+    def test_no_fire_prod_in_window_no_coverage(self):
+        """Prod define in window but tier=none → unreliable, cannot exclude coverage → no fire."""
+        store = _mem_store()
+        pid = _project(store)
+        _insert_run(store, pid, 1, "failed")
+        # Prod change with no coverage entry → tier will be 'none'
+        store.insert_determination(pid, seq=2, file_path=FILE, define_name="unrelated_fn",
+                                   node_fingerprint="fp_p", edit_type="modify")
+        _insert_run(store, pid, 2, "passed")
+
+        affected = _test_define_affected(store, pid)
+        signals.detect_test_tampering(store, pid, affected, ROOT, EMPTY_IDX)
+        assert _open_incs(store, pid) == []
+
+    def test_fires_prod_precise_unlinked_to_tc(self):
+        """All prod defines in window are precise-tier but cover a different tc → fire."""
+        store = _mem_store()
+        pid = _project(store)
+
+        OTHER_CLS, OTHER_NAME = "tests.TestG", "test_g"
+        OTHER_TC = f"{OTHER_CLS}::{OTHER_NAME}"
+
+        run1 = store.insert_test_run(pid, seq=1, source_path="/t/r1.xml",
+                                     source_mtime="2024-01-01T00:01:00Z",
+                                     passed=0, failed=2, skipped=0)
+        store.insert_test_case(run1, classname=CLASSNAME, name=TC_NAME,
+                               file_path=None, status="failed")
+        store.insert_test_case(run1, classname=OTHER_CLS, name=OTHER_NAME,
+                               file_path=None, status="passed")
+
+        # Prod define covers OTHER_TC (not TC) — precise tier because OTHER_TC has history
+        store.insert_determination(pid, seq=2, file_path=FILE, define_name=DEFINE,
+                                   node_fingerprint="fp_p", edit_type="modify")
+        store.insert_coverage_entry(pid, OTHER_TC, f"f.{DEFINE}")
+
+        run2 = store.insert_test_run(pid, seq=2, source_path="/t/r2.xml",
+                                     source_mtime="2024-01-01T00:02:00Z",
+                                     passed=2, failed=0, skipped=0)
+        store.insert_test_case(run2, classname=CLASSNAME, name=TC_NAME,
+                               file_path=None, status="passed")
+        store.insert_test_case(run2, classname=OTHER_CLS, name=OTHER_NAME,
+                               file_path=None, status="passed")
+
+        affected = _test_define_affected(store, pid)
+        signals.detect_test_tampering(store, pid, affected, ROOT, EMPTY_IDX)
+        assert len(_open_incs(store, pid)) == 1
