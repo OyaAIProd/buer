@@ -730,7 +730,10 @@ async def post_edit_handler(request: Request) -> Response:
     reconcile_against_disk(store, pid, root, exclude={file_path})
 
     # reconcile already calls advance_incidents internally (§4.6)
-    reconcile(store, pid, [file_path])
+    # exclude_tests=False: allow test-file defines into affected so detect_test_tampering
+    # can see them. Noise guard: stuck/debug/define_loop each have _is_excluded_path gates
+    # that drop test-path defines before firing (added alongside this change).
+    reconcile(store, pid, [file_path], exclude_tests=False)
 
     # Enqueue file for async structural recomputation (§4.0 v2.1)
     store.enqueue_recompute(pid, file_path)

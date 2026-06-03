@@ -511,6 +511,8 @@ def detect_debug_loop(
     the agent gets "往哪看" not just "你卡住了".
     """
     for file_path, define_name, _det_id in affected:
+        if _is_excluded_path(file_path):
+            continue
         target_node = f"{file_path}::{define_name}"
         if _open_incident_for(store, project_id, "debug_loop", target_node) is not None:
             continue
@@ -778,6 +780,8 @@ def detect_stuck_region(
     Does NOT update existing incidents — advance_incidents handles recurrences.
     """
     for file_path, define_name, _det_id in affected:
+        if _is_excluded_path(file_path):
+            continue
         target_node = f"{file_path}::{define_name}"
         # Upgrade relationship (§2.2): debug_loop has claimed this define → skip
         if _open_incident_for(store, project_id, "debug_loop", target_node) is not None:
@@ -1039,6 +1043,8 @@ def detect_define_loop(
     Idempotent: skips defines that already have an open define_loop incident.
     """
     for file_path, define_name, _det_id in affected:
+        if _is_excluded_path(file_path):
+            continue
         target_node = f"{file_path}::{define_name}"
         if _open_incident_for(store, project_id, "define_loop", target_node) is not None:
             continue

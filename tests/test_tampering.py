@@ -485,3 +485,52 @@ class TestWindowCondition3:
         affected = _test_define_affected(store, pid)
         signals.detect_test_tampering(store, pid, affected, ROOT, EMPTY_IDX)
         assert len(_open_incs(store, pid)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Reconcile path: exclude_tests=False lets test-file defines reach affected
+# (validates the server.py fix — without it test_tampering never fires in prod)
+# ---------------------------------------------------------------------------
+
+class TestReconcilePath:
+    def test_reconcile_with_exclude_tests_false_builds_affected(self, tmp_path):
+        """reconcile(exclude_tests=False) on a test file records determinations."""
+        import textwrap
+        from buer.reconcile import reconcile as do_reconcile
+
+        test_file = tmp_path / "test_foo.py"
+        test_file.write_text(textwrap.dedent("""
+            def test_bar():
+                assert 1 == 1
+        """))
+
+        store = _mem_store()
+        pid = store.get_or_create_project(str(tmp_path))
+        do_reconcile(store, pid, [str(test_file)], exclude_tests=False)
+
+        dets = store.con.execute(
+            "SELECT define_name FROM determinations WHERE project_id=?", (pid,)
+        ).fetchall()
+        names = {r["define_name"] for r in dets}
+        assert "test_bar" in names
+
+    def test_reconcile_with_exclude_tests_true_skips_test_file(self, tmp_path):
+        """Default exclude_tests=True silently skips test files (baseline guard)."""
+        import textwrap
+        from buer.reconcile import reconcile as do_reconcile
+
+        test_file = tmp_path / "test_foo.py"
+        test_file.write_text(textwrap.dedent("""
+            def test_bar():
+                assert 1 == 1
+        """))
+
+        store = _mem_store()
+        pid = store.get_or_create_project(str(tmp_path))
+        do_reconcile(store, pid, [str(test_file)])  # default exclude_tests=True
+
+        dets = store.con.execute(
+            "SELECT define_name FROM determinations WHERE project_id=?", (pid,)
+        ).fetchall()
+        names = {r["define_name"] for r in dets}
+        assert "test_bar" not in names

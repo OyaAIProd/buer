@@ -1126,3 +1126,69 @@ class TestExclusionGlobsBarePathRegression:
 
     def test_non_legal_tsx_at_depth_not_excluded(self):
         assert not signals._is_excluded_path("components/omni/OmniGenUiRenderer.tsx")
+
+
+# ---------------------------------------------------------------------------
+# Test-file gate: stuck_region / debug_loop / define_loop must not fire on
+# test-path defines (noise guard paired with server.py exclude_tests=False fix)
+# ---------------------------------------------------------------------------
+
+TEST_FILE_PATH = "/test/test_f.py"
+TEST_DEF = "test_fn"
+
+
+def _test_file_stuck_chain(n: int):
+    """Version chain for a TEST-path define (n modifications, large adjacent d_J)."""
+    store = _mem_store()
+    pid = store.get_or_create_project(ROOT)
+    dets = []
+    for i in range(1, n + 1):
+        det_id = store.insert_determination(
+            pid, seq=i, file_path=TEST_FILE_PATH, define_name=TEST_DEF,
+            node_fingerprint=f"tfp{i}", edit_type="create" if i == 1 else "modify",
+        )
+        dets.append(det_id)
+    for i in range(len(dets) - 1):
+        store.insert_gd_edge(pid, from_det=dets[i], to_det=dets[i + 1],
+                             edge_class="version_chain")
+    return store, pid, dets
+
+
+class TestTestFileGates:
+    """stuck_region / debug_loop / define_loop must silently skip test-path defines."""
+
+    def test_stuck_region_no_fire_on_test_file(self):
+        store, pid, dets = _test_file_stuck_chain(5)
+        affected = [(TEST_FILE_PATH, TEST_DEF, dets[-1])]
+        signals.detect_stuck_region(store, pid, affected, ROOT, EMPTY_IDX)
+        incs = [i for i in store.open_incidents(pid) if i["signal"] == "stuck_region"]
+        assert incs == []
+
+    def test_define_loop_no_fire_on_test_file(self):
+        store, pid, dets = _test_file_stuck_chain(5)
+        affected = [(TEST_FILE_PATH, TEST_DEF, dets[-1])]
+        signals.detect_define_loop(store, pid, affected, ROOT, EMPTY_IDX)
+        incs = [i for i in store.open_incidents(pid) if i["signal"] == "define_loop"]
+        assert incs == []
+
+    def test_debug_loop_no_fire_on_test_file(self):
+        store, pid, dets = _test_file_stuck_chain(5)
+        # Add a passing test run so debug_loop would fire if gate were absent
+        run_id = store.insert_test_run(pid, seq=5, source_path="/t/r.xml",
+                                       source_mtime="2024-01-01T00:05:00Z",
+                                       passed=0, failed=1, skipped=0)
+        store.insert_test_case(run_id, classname="tests.T", name=TEST_DEF,
+                               file_path=None, status="failed")
+        store.insert_coverage_entry(pid, f"tests.T::{TEST_DEF}", TEST_DEF)
+        affected = [(TEST_FILE_PATH, TEST_DEF, dets[-1])]
+        signals.detect_debug_loop(store, pid, affected, ROOT, EMPTY_IDX)
+        incs = [i for i in store.open_incidents(pid) if i["signal"] == "debug_loop"]
+        assert incs == []
+
+    def test_stuck_region_still_fires_on_prod_file(self):
+        """Gate must not suppress production-file defines."""
+        store, pid, dets = _stuck_chain(5)
+        affected = [(FILE, DEFINE, dets[-1])]
+        signals.detect_stuck_region(store, pid, affected, ROOT, EMPTY_IDX)
+        incs = [i for i in store.open_incidents(pid) if i["signal"] == "stuck_region"]
+        assert len(incs) == 1
