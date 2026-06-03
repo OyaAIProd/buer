@@ -687,21 +687,54 @@ def _test_define_matches_testcase(define_name: str, classname: str, name: str) -
 
 # ── detect_test_tampering (§2.7) ─────────────────────────────────────────────
 
+def _norm_test_path(path: str, root: str) -> str:
+    """Normalize path to root-relative posix string for cross-source comparison.
+
+    Handles absolute/relative mismatch between junit-reported file_path and
+    reconcile-provided edited_files.
+
+    Absolute path: resolved via realpath then made relative to root.
+    Relative path: assumed already root-relative (JUnit convention) — normalise
+                   separators only, no CWD-based resolution (which would be wrong).
+    Fallback to basename when the path escapes root or ValueError on Windows drives.
+    """
+    try:
+        if os.path.isabs(path):
+            rel = os.path.relpath(os.path.realpath(path), os.path.realpath(root))
+            if rel.startswith(".."):
+                return os.path.basename(path)
+            return rel.replace(os.sep, "/")
+        # Relative path — trust it as root-relative, just normalise separators.
+        norm = os.path.normpath(path).replace(os.sep, "/")
+        return norm if not norm.startswith("..") else os.path.basename(path)
+    except ValueError:
+        return os.path.basename(path)
+
+
 def detect_test_tampering(
     store: Store,
     project_id: int,
     affected: list,   # [(file_path, define_name, det_id), ...]
     root: str,
     idx: callgraph.SymbolIndex,
+    edited_files: list[str] = (),
 ) -> None:
     """Detect testcase red→green caused by test code change, not production fix (§2.7).
 
     Three conditions required:
       (1) testcase history shows failed→passed flip (_is_red_to_green)
       (2) a TEST define was modified this round (excluded-path file in affected)
-          whose name matches this testcase
+          whose name matches this testcase  [define-level, exact — pytest]
+          OR the testcase's file_path was among the edited test files  [file-level fallback — vitest/jest]
       (3) no PRODUCTION define associated with this testcase was also modified
           (if production was also changed, the fix might be real — skip)
+
+    File-level fallback rationale: vitest/jest tests use anonymous callbacks
+    (describe/it) that yield 0 defines; the affected list is therefore always empty
+    for those test files.  Passing edited_files (= changed_files from reconcile)
+    lets the signal reach condition-2 via the test file itself instead of a define.
+    Safety: condition 3 still guards against false positives — only "test file
+    changed + no related production change + red→green" fires.
 
     Uses escalate_user_directly=True in details: advance_incidents routes
     directly to escalated_user, bypassing agent self-correction (§2.7 作弊类).
@@ -712,18 +745,23 @@ def detect_test_tampering(
     Wording is always a question (§2.7):
       "改的是测试本身，不是被测代码，确认测试改对了吗？"
     """
-    # Quick exit: no test-path defines in affected → nothing to examine
+    # Quick exit: no test-path defines in affected AND no test files edited
     test_affected = [
         (fp, dn, did) for fp, dn, did in affected if _is_excluded_path(fp)
     ]
-    if not test_affected:
+    # File-level fallback: test files edited this round (vitest/jest have 0 defines).
+    # parse.is_test_file covers .test.ts/.spec.ts and Python test_*.py equally.
+    test_files_edited: frozenset[str] = frozenset(
+        _norm_test_path(f, root) for f in edited_files if parse.is_test_file(f)
+    )
+    if not test_affected and not test_files_edited:
         return
 
     prod_affected = [
         (fp, dn, did) for fp, dn, did in affected if not _is_excluded_path(fp)
     ]
 
-    for classname, name in store.distinct_test_case_pairs(project_id):
+    for classname, name, tc_file_path in store.distinct_test_case_triples(project_id):
         tc = f"{classname}::{name}"
         if _open_incident_for(store, project_id, "test_tampering", tc) is not None:
             continue
@@ -732,12 +770,24 @@ def detect_test_tampering(
         if not _is_red_to_green(history):
             continue
 
-        # Condition 2: at least one test-path define in affected matches this testcase
+        # Condition 2: define-level (pytest, precise) OR file-level (vitest, fallback)
         matching_test_def = next(
             (f"{fp}::{dn}" for fp, dn, _did in test_affected
              if _test_define_matches_testcase(dn, classname, name)),
             None,
         )
+        if matching_test_def is None and test_files_edited:
+            # File-level path resolution: prefer explicit tc_file_path, fall back to
+            # classname when it looks like a file path (vitest JUnit classname=filename).
+            tc_path_candidate = tc_file_path
+            if tc_path_candidate is None and ("/" in classname or os.sep in classname
+                                              or classname.endswith((".ts", ".tsx", ".js",
+                                                                      ".jsx", ".py"))):
+                tc_path_candidate = classname
+            if tc_path_candidate is not None:
+                tc_rel = _norm_test_path(tc_path_candidate, root)
+                if tc_rel in test_files_edited:
+                    matching_test_def = tc_path_candidate
         if matching_test_def is None:
             continue
 

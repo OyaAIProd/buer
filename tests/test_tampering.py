@@ -573,3 +573,180 @@ class TestReconcilePath:
         ).fetchall()
         names = {r["define_name"] for r in dets}
         assert "test_bar" not in names
+
+
+# ---------------------------------------------------------------------------
+# Vitest/jest file-level fallback (盲区 D fix)
+# Vitest describe/it blocks are anonymous callbacks → 0 defines extracted.
+# detect_test_tampering must fire via file-level match when edited_files is provided.
+# ---------------------------------------------------------------------------
+
+# Vitest test file (absolute path, .test.ts suffix → parse.is_test_file = True)
+VITEST_ROOT = "/vtest"
+VITEST_FILE = "/vtest/src/auth.test.ts"
+VITEST_CLS  = "auth > login"          # vitest classname format
+VITEST_NAME = "should reject bad password"
+VITEST_TC   = f"{VITEST_CLS}::{VITEST_NAME}"
+VITEST_PROD = "/vtest/src/auth.ts"    # production file
+
+
+def _vitest_run(store: Store, pid: int, seq: int, status: str) -> None:
+    """Insert a test run whose single testcase has file_path set (vitest pattern)."""
+    run_id = store.insert_test_run(
+        pid, seq=seq, source_path=f"/vtest/junit_{seq}.xml",
+        source_mtime=f"2024-01-01T00:{seq:02d}:00Z",
+        passed=1 if status == "passed" else 0,
+        failed=1 if status in ("failed", "error") else 0,
+        skipped=0,
+    )
+    store.insert_test_case(
+        run_id, classname=VITEST_CLS, name=VITEST_NAME,
+        file_path=VITEST_FILE,   # ← vitest reports absolute file_path
+        status=status,
+    )
+
+
+class TestVitestFileLevelFallback:
+    """Vitest/jest: no defines in affected, but edited_files carries the test file."""
+
+    def test_fires_via_file_level_when_no_defines(self):
+        """Core case: vitest test edited (0 defines) → file-level match → fires."""
+        store = _mem_store()
+        pid = store.get_or_create_project(VITEST_ROOT)
+        _vitest_run(store, pid, 1, "failed")
+        _vitest_run(store, pid, 2, "passed")   # red→green
+
+        # affected is EMPTY — vitest file has no defines
+        signals.detect_test_tampering(
+            store, pid, affected=[], root=VITEST_ROOT, idx=EMPTY_IDX,
+            edited_files=[VITEST_FILE],
+        )
+
+        incs = [i for i in store.open_incidents(pid) if i["signal"] == "test_tampering"]
+        assert len(incs) == 1
+        assert incs[0]["target_node"] == VITEST_TC
+
+    def test_details_has_test_define_set(self):
+        """test_define field is present (set to file path for file-level match)."""
+        store = _mem_store()
+        pid = store.get_or_create_project(VITEST_ROOT)
+        _vitest_run(store, pid, 1, "failed")
+        _vitest_run(store, pid, 2, "passed")
+
+        signals.detect_test_tampering(
+            store, pid, affected=[], root=VITEST_ROOT, idx=EMPTY_IDX,
+            edited_files=[VITEST_FILE],
+        )
+
+        incs = [i for i in store.open_incidents(pid) if i["signal"] == "test_tampering"]
+        details = json.loads(incs[0]["details"])
+        assert "test_define" in details
+        assert details["escalate_user_directly"] is True
+
+    def test_no_fire_when_test_file_not_in_edited(self):
+        """edited_files doesn't contain the test file → quick exit, no incident."""
+        store = _mem_store()
+        pid = store.get_or_create_project(VITEST_ROOT)
+        _vitest_run(store, pid, 1, "failed")
+        _vitest_run(store, pid, 2, "passed")
+
+        # Different file in edited_files — not the test file for this testcase
+        other = "/vtest/src/other.test.ts"
+        signals.detect_test_tampering(
+            store, pid, affected=[], root=VITEST_ROOT, idx=EMPTY_IDX,
+            edited_files=[other],
+        )
+
+        incs = [i for i in store.open_incidents(pid) if i["signal"] == "test_tampering"]
+        assert incs == []
+
+    def test_no_fire_when_edited_files_empty(self):
+        """No edited_files supplied (default) and no defines → quick exit."""
+        store = _mem_store()
+        pid = store.get_or_create_project(VITEST_ROOT)
+        _vitest_run(store, pid, 1, "failed")
+        _vitest_run(store, pid, 2, "passed")
+
+        signals.detect_test_tampering(
+            store, pid, affected=[], root=VITEST_ROOT, idx=EMPTY_IDX,
+            # edited_files not passed → default ()
+        )
+
+        incs = [i for i in store.open_incidents(pid) if i["signal"] == "test_tampering"]
+        assert incs == []
+
+    def test_condition3_blocks_when_prod_modified(self):
+        """File-level match BUT production code also changed inside window → condition 3 blocks."""
+        store = _mem_store()
+        pid = store.get_or_create_project(VITEST_ROOT)
+        _vitest_run(store, pid, 1, "failed")
+
+        # Production change at seq=2 (inside window), no coverage → tier=none → blocks
+        store.insert_determination(
+            pid, seq=2, file_path=VITEST_PROD, define_name="authenticate",
+            node_fingerprint="fp_prod", edit_type="modify",
+        )
+        _vitest_run(store, pid, 2, "passed")
+
+        # No coverage entry → tier=none → should_fire=False (cannot exclude coverage)
+        signals.detect_test_tampering(
+            store, pid, affected=[], root=VITEST_ROOT, idx=EMPTY_IDX,
+            edited_files=[VITEST_FILE],
+        )
+
+        incs = [i for i in store.open_incidents(pid) if i["signal"] == "test_tampering"]
+        assert incs == []
+
+    def test_pytest_define_level_unaffected(self):
+        """Existing pytest define-level path still works alongside file-level."""
+        store = _mem_store()
+        pid = _project(store)     # ROOT = "/test"
+        _insert_run(store, pid, 1, "failed")
+        _insert_run(store, pid, 2, "passed")
+
+        affected = _test_define_affected(store, pid)
+        # Pass edited_files too — define-level should take precedence
+        signals.detect_test_tampering(
+            store, pid, affected=affected, root=ROOT, idx=EMPTY_IDX,
+            edited_files=[TEST_FILE],
+        )
+
+        incs = _open_incs(store, pid)
+        assert len(incs) == 1
+        details = json.loads(incs[0]["details"])
+        # define-level match: test_define should be "file::define", not just file path
+        assert "::" in details["test_define"]
+
+    def test_path_normalization_abs_edited_rel_tc(self):
+        """testcase.file_path relative, edited_files absolute → still matches."""
+        store = _mem_store()
+        pid = store.get_or_create_project(VITEST_ROOT)
+
+        # testcase has a root-relative file_path (as some JUnit reporters emit)
+        run_id = store.insert_test_run(
+            pid, seq=1, source_path="/vtest/j1.xml",
+            source_mtime="2024-01-01T00:01:00Z", passed=0, failed=1, skipped=0,
+        )
+        store.insert_test_case(
+            run_id, classname=VITEST_CLS, name=VITEST_NAME,
+            file_path="src/auth.test.ts",   # ← relative path
+            status="failed",
+        )
+        run_id2 = store.insert_test_run(
+            pid, seq=2, source_path="/vtest/j2.xml",
+            source_mtime="2024-01-01T00:02:00Z", passed=1, failed=0, skipped=0,
+        )
+        store.insert_test_case(
+            run_id2, classname=VITEST_CLS, name=VITEST_NAME,
+            file_path="src/auth.test.ts",
+            status="passed",
+        )
+
+        # edited_files has ABSOLUTE path
+        signals.detect_test_tampering(
+            store, pid, affected=[], root=VITEST_ROOT, idx=EMPTY_IDX,
+            edited_files=[VITEST_FILE],   # "/vtest/src/auth.test.ts"
+        )
+
+        incs = [i for i in store.open_incidents(pid) if i["signal"] == "test_tampering"]
+        assert len(incs) == 1

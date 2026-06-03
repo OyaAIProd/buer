@@ -303,7 +303,7 @@ def reconcile(
     # regression after scan_test_results: test data must be ingested first (§2.6)
     signals.detect_regression(store, project_id, result.affected, root, idx)
     # test_tampering after regression: same data, opposite direction (§2.7)
-    signals.detect_test_tampering(store, project_id, result.affected, root, idx)
+    signals.detect_test_tampering(store, project_id, result.affected, root, idx, changed_files)
     # dangling_reference is on-demand via analyze_dangling MCP tool (not auto-run here).
     signals.advance_incidents(
         store, project_id, result.affected,
