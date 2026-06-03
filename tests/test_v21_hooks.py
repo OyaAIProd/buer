@@ -3,14 +3,14 @@
 Coverage:
   A. POST /buer/post-read: file_path present → enqueued, empty 200, no analysis
   B. POST /buer/post-read: Grep/Glob (no file_path) → cwd enqueued, empty 200
-  C. POST /buer/stop: stop_hook_active=true → empty 200, no recompute (anti-loop)
-  D. POST /buer/stop: stop_hook_active=false → drain called, user alerts returned
+  C. POST /buer/stop: stop_hook_active=true → {} (allow, anti-loop)
+  D. POST /buer/stop: stop_hook_active=false → drain called; deliveries → decision:block
   E. POST /buer/session-start: gd_edges exist → returns project overview
   F. POST /buer/session-start: no gd_edges → empty 200
   G. POST /buer/session-start: source=resume → executes (not skipped)
   H. post-edit still injects agent alerts + now enqueues file
   I. pending_recompute dedup: same file not re-enqueued while pending
-  J. All endpoints: bad payload / no project → silent empty 200
+  J. All endpoints: bad payload / no project → {} (allow)
 """
 from __future__ import annotations
 
@@ -159,14 +159,14 @@ class TestPostReadGrepGlob:
 # ── C: stop with stop_hook_active=true (anti-loop) ────────────────────────────
 
 class TestStopAntiLoop:
-    def test_stop_hook_active_true_returns_empty_immediately(self):
+    def test_stop_hook_active_true_returns_allow_immediately(self):
         store = _mock_store()
         r = _client(store).post("/buer/stop", json={
             "stop_hook_active": True,
             "cwd": "/proj",
         })
         assert r.status_code == 200
-        assert r.text == ""
+        assert r.json() == {}  # {} = allow stop, no decision:block
 
     def test_stop_hook_active_true_no_drain(self):
         store = _mock_store()
@@ -196,7 +196,7 @@ class TestStopNormal:
         })
         store.drain_recompute_queue.assert_called_once_with(1)
 
-    def test_returns_user_alerts(self):
+    def test_returns_decision_block_with_alerts(self):
         store = _mock_store(user_deliveries=[
             {"message": "Alert 1"},
             {"message": "Alert 2"},
@@ -206,17 +206,31 @@ class TestStopNormal:
             "cwd": "/proj",
         })
         assert r.status_code == 200
-        assert "Alert 1" in r.text
-        assert "Alert 2" in r.text
+        body = r.json()
+        assert body["decision"] == "block"
+        assert "Alert 1" in body["reason"]
+        assert "Alert 2" in body["reason"]
+        assert "[BUER]" in body["reason"]
 
-    def test_no_user_alerts_empty_response(self):
+    def test_reason_contains_prefix(self):
+        store = _mock_store(user_deliveries=[{"message": "test alert"}])
+        r = _client(store).post("/buer/stop", json={
+            "stop_hook_active": False,
+            "cwd": "/proj",
+        })
+        reason = r.json()["reason"]
+        assert "BUER" in reason
+        assert "自动检测" in reason
+        assert "不是用户拒绝" in reason
+
+    def test_no_user_alerts_returns_allow(self):
         store = _mock_store(user_deliveries=[])
         r = _client(store).post("/buer/stop", json={
             "stop_hook_active": False,
             "cwd": "/proj",
         })
         assert r.status_code == 200
-        assert r.text == ""
+        assert r.json() == {}  # {} = allow stop
 
     def test_no_project_silent(self):
         store = _mock_store(pid=None)
@@ -464,7 +478,7 @@ class TestSilentFailures:
             "/buer/stop", content=b"!!!", headers={"Content-Type": "application/json"}
         )
         assert r.status_code == 200
-        assert r.text == ""
+        assert r.json() == {}  # {} = allow stop
 
     def test_stop_no_project_silent(self):
         store = _mock_store(pid=None)

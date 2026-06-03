@@ -251,14 +251,14 @@ class TestSessionStartNoAutoRegister:
         assert rows["n"] == 0
 
     def test_stop_silent_for_unregistered_cwd(self, client, fresh_store, tmp_path):
-        """stop handler with unregistered cwd → silent empty, no project created."""
+        """stop handler with unregistered cwd → {} (allow), no project created."""
         resp = client.post("/buer/stop", json={
             "stop_hook_active": False,
             "cwd": str(tmp_path),
             "session_id": "sess-stop-1",
         })
         assert resp.status_code == 200
-        assert resp.text == ""
+        assert resp.json() == {}  # {} = allow stop (unregistered cwd)
         rows = fresh_store.con.execute("SELECT COUNT(*) AS n FROM projects").fetchone()
         assert rows["n"] == 0
 

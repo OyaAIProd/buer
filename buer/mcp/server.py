@@ -1033,39 +1033,44 @@ def _recompute_in_background(project_id: int, files: list[str]) -> None:
 
 @mcp.custom_route("/buer/stop", methods=["POST"])
 async def stop_handler(request: Request) -> Response:
-    """Stop/SubagentStop hook — async recompute trigger + user alert summary (§4.0 v2.1).
+    """Stop/SubagentStop hook — async recompute trigger + decision:block alert (§4.0 v2.1).
 
     Payload: {"stop_hook_active": true|false, "cwd": "...", "session_id": "..."}
 
-    CRITICAL: check stop_hook_active FIRST — if true, return empty immediately.
+    CRITICAL: check stop_hook_active FIRST — if true, return {} immediately (allow).
     The Stop hook itself triggers another Stop when it produces output; stop_hook_active
     flags this re-entry to prevent infinite loop.
 
     stop_hook_active=false:
       (a) Drain pending_recompute queue → kick off background recompute thread.
           Background thread is non-blocking; endpoint returns before recompute finishes.
-      (b) take_user_deliveries → return accumulated user-level alerts as response body.
+      (b) take_user_deliveries → if any pending, return {"decision":"block","reason":...}
+          so Claude Code injects the alerts into agent context before it stops.
+          Empty deliveries → return {} (allow stop).
 
-    Response text (if any) is user-visible via Stop hook stdout.
+    HTTP hook response semantics: {} = allow stop; {"decision":"block","reason":...} = block.
+    All non-delivery paths return {} (standard allow) as application/json.
     """
+    _ALLOW = Response("{}", media_type="application/json", status_code=200)
+
     try:
         body = await request.json()
     except Exception:
-        return Response(content="", media_type="text/plain", status_code=200)
+        return _ALLOW
 
-    # Hard anti-loop guard (§0 §4.0 查证硬要求)
+    # Hard anti-loop guard (§0 §4.0 查证硬要求): second Stop must be allowed through.
     if body.get("stop_hook_active"):
-        return Response(content="", media_type="text/plain", status_code=200)
+        return _ALLOW
 
     cwd = body.get("cwd", "")
     session_id = body.get("session_id", "")
     if not cwd:
-        return Response(content="", media_type="text/plain", status_code=200)
+        return _ALLOW
 
     store = _get_store()
     pid = store.find_project_for_file(cwd)
     if pid is None:
-        return Response(content="", media_type="text/plain", status_code=200)
+        return _ALLOW
 
     # Close session boundary (best-effort).
     if session_id:
@@ -1083,13 +1088,21 @@ async def stop_handler(request: Request) -> Response:
             daemon=True,
         ).start()
 
-    # (b) Return accumulated user-level alerts
+    # (b) Block stop and inject pending user-level alerts into agent context.
     deliveries = store.take_user_deliveries(pid)
     if not deliveries:
-        return Response(content="", media_type="text/plain", status_code=200)
+        return _ALLOW
 
-    text = "\n\n".join(d["message"] for d in deliveries)
-    return Response(content=text, media_type="text/plain", status_code=200)
+    _PREFIX = (
+        "[BUER] 本轮检测到以下未处理问题。这是 BUER 的自动检测，不是用户拒绝。"
+        "请先向用户说明或修复，再结束本轮：\n\n"
+    )
+    reason = _PREFIX + "\n\n".join(d["message"] for d in deliveries)
+    return Response(
+        json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False),
+        media_type="application/json",
+        status_code=200,
+    )
 
 
 def _compute_crash_injection(
