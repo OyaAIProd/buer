@@ -179,7 +179,7 @@ def structural_concerns(
             hit_dims.append("callees")
         if r["churn"] >= THETA_DEBT_CHURN:
             hit_dims.append("churn")
-        if r["lambda_"] >= lambda_threshold:
+        if r["lambda_"] >= lambda_threshold and r["lambda_"] > 0:
             hit_dims.append("lambda")
         if not hit_dims:
             continue

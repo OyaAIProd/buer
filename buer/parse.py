@@ -1739,6 +1739,49 @@ def _handle_cjs_assignment(
                                              file_return_types=file_return_types))
 
 
+def _find_iife_fn_node(expr_stmt_node):
+    """Return the function_expression/arrow_function node of an IIFE, or None.
+
+    Handles:
+      (function(){...})()          — basic, parens around function
+      (() => {...})()              — arrow variant
+      (function(){...}.call(this)) — lodash .call/.apply form (outer parens)
+    UMD factory-as-argument is not handled (recorded as known residual).
+    """
+    named = [c for c in expr_stmt_node.children if c.is_named]
+    if not named:
+        return None
+    inner = named[0]
+    # Unwrap optional outer parenthesized_expression (lodash: ;(fn.call(this));)
+    if inner.type == "parenthesized_expression":
+        pnc = [c for c in inner.children if c.is_named]
+        if not pnc:
+            return None
+        inner = pnc[0]
+    if inner.type != "call_expression":
+        return None
+    call_nc = [c for c in inner.children if c.is_named]
+    if not call_nc:
+        return None
+    callee = call_nc[0]
+    # Case A: (function(){})() or (() => {})() — parens wrap the function
+    if callee.type == "parenthesized_expression":
+        fn_cands = [c for c in callee.children if c.is_named]
+        if fn_cands and fn_cands[0].type in _CALLABLE_TYPES:
+            return fn_cands[0]
+    # Case B: function(){}() — function directly as callee (rare)
+    if callee.type in _CALLABLE_TYPES:
+        return callee
+    # Case C: (function(){}.call(this)) — member_expression with .call/.apply
+    if callee.type == "member_expression":
+        me_nc = [c for c in callee.children if c.is_named]
+        if (len(me_nc) >= 2
+                and me_nc[0].type in _CALLABLE_TYPES
+                and me_nc[-1].text.decode() in ("call", "apply")):
+            return me_nc[0]
+    return None
+
+
 # ── JS/TS define collector ─────────────────────────────────────────────────────
 
 def _collect_js_defines(
@@ -1863,14 +1906,24 @@ def _collect_js_defines(
                 (ch for ch in c.children if ch.type == "internal_module"), None,
             )
             if mod_node is None:
-                # CommonJS assignment: module.exports / X.prototype / exports.foo
                 if t == "expression_statement":
+                    # CommonJS assignment: module.exports / X.prototype / exports.foo
                     asgn = next(
                         (ch for ch in c.children if ch.type == "assignment_expression"), None,
                     )
                     if asgn is not None:
                         _handle_cjs_assignment(asgn, class_prefix, file_path,
                                                file_return_types, out)
+                    # IIFE: (function(){...})() or (function(){...}.call(this))
+                    iife_fn = _find_iife_fn_node(c)
+                    if iife_fn is not None:
+                        body = _child_of_type(iife_fn, "statement_block")
+                        if body is not None:
+                            _collect_js_defines(
+                                body, file_path, class_prefix, is_class_body=False,
+                                out=out, class_field_types=None,
+                                file_return_types=file_return_types,
+                            )
                 continue
             ns_name = next(
                 (ch.text.decode() for ch in mod_node.children if ch.type == "identifier"),

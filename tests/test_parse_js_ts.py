@@ -923,3 +923,99 @@ class TestCjsDefines:
             edges = compute_call_edges(caller, tmpdir, idx)
             callee_names = {e[1].split(".")[-1] for e in edges}
             assert "use" in callee_names
+
+
+class TestIifeDefines:
+    """Blind spot C: functions inside IIFEs must be extracted as top-level defines."""
+
+    def _parse(self, src: str) -> list[Define]:
+        with tempfile.NamedTemporaryFile(suffix=".js", delete=False) as f:
+            f.write(textwrap.dedent(src).encode())
+            path = f.name
+        try:
+            return extract_defines(path)
+        finally:
+            os.unlink(path)
+
+    def test_basic_iife_extracts_function_declarations(self):
+        src = """\
+            (function() {
+              function helper(x) { return x + 1; }
+              function chunk(arr, size) { return arr.slice(0, size); }
+            })();
+        """
+        defs = self._parse(src)
+        names = {d.name for d in defs}
+        assert "helper" in names
+        assert "chunk" in names
+
+    def test_lodash_call_form_extracts_functions(self):
+        # ;(function() { ... }.call(this)); — lodash pattern
+        src = """\
+            ;(function() {
+              function baseSlice(array, start, end) { return array.slice(start, end); }
+              function chunk(array, size) { return array; }
+            }.call(this));
+        """
+        defs = self._parse(src)
+        names = {d.name for d in defs}
+        assert "baseSlice" in names
+        assert "chunk" in names
+
+    def test_arrow_iife_extracts_function_declarations(self):
+        src = """\
+            (() => {
+              function helper() { return 42; }
+            })();
+        """
+        defs = self._parse(src)
+        names = {d.name for d in defs}
+        assert "helper" in names
+
+    def test_nested_iife_bounded_recursion(self):
+        src = """\
+            (function() {
+              function outer() { return 1; }
+              (function() {
+                function inner() { return 2; }
+              })();
+            })();
+        """
+        defs = self._parse(src)
+        names = {d.name for d in defs}
+        assert "outer" in names
+        assert "inner" in names
+
+    def test_iife_bare_names_no_namespace_prefix(self):
+        # IIFE has no namespace → inner functions use bare names
+        src = """\
+            (function() {
+              function doThing() {}
+            })();
+        """
+        defs = self._parse(src)
+        qnames = {d.qualified_name for d in defs}
+        assert "doThing" in qnames
+        assert not any("." in q for q in qnames)
+
+    def test_non_iife_expression_statement_unaffected(self):
+        # Regular assignment expression should not be treated as IIFE
+        src = """\
+            var x = 1;
+            function normal() { return x; }
+        """
+        defs = self._parse(src)
+        names = {d.name for d in defs}
+        assert "normal" in names
+        assert "x" not in names
+
+    def test_no_regression_cjs_still_works(self):
+        # Existing CJS patterns must still extract correctly alongside IIFE fix
+        src = """\
+            module.exports = {
+              use: function use(fn) { return fn; },
+            };
+        """
+        defs = self._parse(src)
+        names = {d.name for d in defs}
+        assert "use" in names

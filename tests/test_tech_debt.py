@@ -570,3 +570,74 @@ class TestCalleesNewThreshold:
         concerns = structural_concerns(store, pid, root)
         assert any(c["define_name"] == "fn_wide" and "callees" in c["hit_dims"]
                    for c in concerns)
+
+
+class TestLambdaZeroGuard:
+    """Λ=0 full-hit guard: sparse/all-zero graphs must not trigger lambda dim for every define."""
+
+    def _make_n_defines(self, store, pid, tmp_path, n: int):
+        """Insert n defines in separate files, all with Λ=0 (no GD edges)."""
+        for i in range(n):
+            fp = str(tmp_path / f"src{i}.py")
+            seq = store.next_seq(pid)
+            store.insert_determination(pid, seq, fp, f"func_{i}", f"fp_{i}", "create")
+
+    def test_all_zero_lambda_no_lambda_dim_hits(self, tmp_path):
+        """Project with Λ=0 for all defines → lambda dimension never fires."""
+        store, pid, root = _make_store(tmp_path)
+        self._make_n_defines(store, pid, tmp_path, MIN_DEFINES_FOR_LAMBDA_PCT)
+        # Add callers to force some defines into concerns via callers dim only
+        store.upsert_call_edge(pid, "other.c1", "py::src0.func_0", "call")
+        store.upsert_call_edge(pid, "other.c2", "py::src0.func_0", "call")
+        store.upsert_call_edge(pid, "other.c3", "py::src0.func_0", "call")
+        store.upsert_call_edge(pid, "other.c4", "py::src0.func_0", "call")
+        store.upsert_call_edge(pid, "other.c5", "py::src0.func_0", "call")
+        concerns = structural_concerns(store, pid, root)
+        lambda_hits = [c for c in concerns if "lambda" in c.get("hit_dims", [])]
+        assert len(lambda_hits) == 0, f"Expected 0 lambda hits, got {len(lambda_hits)}: {lambda_hits}"
+
+    def test_all_zero_lambda_callers_dim_still_fires(self, tmp_path):
+        """Λ=0 guard doesn't suppress other dimensions — callers dim still fires."""
+        store, pid, root = _make_store(tmp_path)
+        self._make_n_defines(store, pid, tmp_path, MIN_DEFINES_FOR_LAMBDA_PCT)
+        _add_callers(store, pid, "py::src0.func_0", THETA_DEBT_CALLERS)
+        concerns = structural_concerns(store, pid, root)
+        hub = next((c for c in concerns if c["define_name"] == "func_0"), None)
+        assert hub is not None
+        assert "callers" in hub["hit_dims"]
+        assert "lambda" not in hub["hit_dims"]
+
+    def test_lambda_zero_threshold_no_full_hit(self, tmp_path):
+        """P95 of all-zeros is 0.0; with guard, 0 >= 0.0 AND 0 > 0 is False → no hit."""
+        store, pid, root = _make_store(tmp_path)
+        # Exactly at MIN threshold: P95 path is taken
+        self._make_n_defines(store, pid, tmp_path, MIN_DEFINES_FOR_LAMBDA_PCT)
+        concerns = structural_concerns(store, pid, root)
+        # No concern should have lambda dim when all lambdas are 0
+        for c in concerns:
+            assert "lambda" not in c.get("hit_dims", []), \
+                f"{c['define_name']} got lambda hit with lambda_=0"
+
+    def test_nonzero_lambda_still_fires(self, tmp_path):
+        """A define with real Λ > P95 still hits lambda dim after the guard."""
+        store, pid, root = _make_store(tmp_path)
+        # Create a deep node with real Λ
+        fp_deep = str(tmp_path / "deep.py")
+        det_deep = store.insert_determination(pid, store.next_seq(pid), fp_deep,
+                                              "deep_node", "fp_d", "create")
+        # Build upstream cone: enough callers to give Λ > threshold
+        for j in range(3):
+            fp_up = str(tmp_path / f"up{j}.py")
+            det_up = store.insert_determination(pid, store.next_seq(pid),
+                                                fp_up, f"upstream_{j}", f"fp_u{j}", "create")
+            store.insert_gd_edge(pid, from_det=det_up, to_det=det_deep,
+                                 edge_class="cross_define_dataflow")
+            for i in range(THETA_DEBT_LAMBDA):
+                store.upsert_call_edge(pid, f"x.c{j}_{i}", f"py::up{j}.upstream_{j}", "call")
+        # Pad to MIN_DEFINES_FOR_LAMBDA_PCT so P95 path is used
+        self._make_n_defines(store, pid, tmp_path, MIN_DEFINES_FOR_LAMBDA_PCT - 4)
+        concerns = structural_concerns(store, pid, root)
+        deep = next((c for c in concerns if c["define_name"] == "deep_node"), None)
+        assert deep is not None, "deep_node should appear in concerns"
+        assert "lambda" in deep["hit_dims"]
+        assert deep["lambda_"] > 0
