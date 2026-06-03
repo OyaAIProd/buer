@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "buer"
-version = "0.2.0a0"
+version = "0.2.0a1"
 description = "Local guardrail for AI coding agents. Catches loops, regressions, and test-tampering by watching what the agent does to your code — not its chat logs."
 readme = "README.md"
 requires-python = ">=3.10"
