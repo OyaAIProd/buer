@@ -133,6 +133,8 @@ class Define:
     return_type: str = ""        # explicit -> Type annotation (L3 return-type inference)
     call_assigns: tuple = ()     # ((var_name, func_name), ...) plain x=func() assigns for L3
     name_bindings: tuple = ()    # ((receiver_name, type_name), ...) unified; lang-agnostic
+    start_line: int = 0          # 1-based source start line (0 = unknown)
+    end_line: int = 0            # 1-based source end line, inclusive (0 = unknown)
 
 
 # ── shared tree-sitter helpers ────────────────────────────────────────────────
@@ -947,6 +949,8 @@ def _extract_function(
         return_type=return_type,
         call_assigns=call_assigns,
         name_bindings=name_bindings,
+        start_line=fn_node.start_point[0] + 1,
+        end_line=fn_node.end_point[0] + 1,
     )
 
 
@@ -1583,6 +1587,8 @@ def _extract_js_callable(
         numeric_literals=_js_collect_numeric_literals(body_node),
         operators=_js_collect_operators(body_node),
         name_bindings=name_bindings,
+        start_line=fn_node.start_point[0] + 1,
+        end_line=fn_node.end_point[0] + 1,
     )
 
 

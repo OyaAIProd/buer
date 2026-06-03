@@ -53,6 +53,8 @@ class Store:
             "ALTER TABLE projects ADD COLUMN notification_level TEXT DEFAULT 'medium'",
             "ALTER TABLE determinations ADD COLUMN file_mtime REAL",
             "ALTER TABLE call_edges ADD COLUMN source_file TEXT",
+            "ALTER TABLE determinations ADD COLUMN start_line INTEGER DEFAULT 0",
+            "ALTER TABLE determinations ADD COLUMN end_line INTEGER DEFAULT 0",
         ):
             try:
                 self.con.execute(stmt)
@@ -256,16 +258,18 @@ class Store:
         edit_type: Optional[str],
         return_type: str = "",
         fine_fingerprint: Optional[str] = None,
+        start_line: int = 0,
+        end_line: int = 0,
     ) -> int:
         """Insert one determination (one agent edit = one node). All args
         auto-derived from the changed file; none declared by the agent."""
         cur = self.con.execute(
             """INSERT INTO determinations
                (project_id, seq, file_path, define_name, node_fingerprint, return_type,
-                edit_type, fine_fingerprint, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                edit_type, fine_fingerprint, start_line, end_line, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
             (project_id, seq, file_path, define_name, node_fingerprint, return_type,
-             edit_type, fine_fingerprint),
+             edit_type, fine_fingerprint, start_line, end_line),
         )
         self.con.commit()
         return cur.lastrowid
@@ -280,6 +284,8 @@ class Store:
         return_type: str = "",
         fine_fingerprint: Optional[str] = None,
         file_mtime: Optional[float] = None,
+        start_line: int = 0,
+        end_line: int = 0,
     ) -> tuple[int, int]:
         """Atomically allocate next seq and insert the determination in one
         IMMEDIATE transaction, preventing the next_seq race between concurrent
@@ -299,10 +305,10 @@ class Store:
             ins = cur.execute(
                 """INSERT INTO determinations
                    (project_id, seq, file_path, define_name, node_fingerprint, return_type,
-                    edit_type, fine_fingerprint, file_mtime, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                    edit_type, fine_fingerprint, file_mtime, start_line, end_line, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
                 (project_id, seq, file_path, define_name, node_fingerprint, return_type,
-                 edit_type, fine_fingerprint, file_mtime),
+                 edit_type, fine_fingerprint, file_mtime, start_line, end_line),
             )
             det_id = ins.lastrowid
             self.con.commit()

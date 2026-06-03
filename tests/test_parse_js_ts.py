@@ -1019,3 +1019,141 @@ class TestIifeDefines:
         defs = self._parse(src)
         names = {d.name for d in defs}
         assert "use" in names
+
+
+class TestLineRanges:
+    """Define.start_line / end_line: 1-based, tree-sitter node bounds."""
+
+    def _parse_py(self, src: str) -> list:
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+            f.write(textwrap.dedent(src).encode())
+            path = f.name
+        try:
+            return extract_defines(path)
+        finally:
+            os.unlink(path)
+
+    def _parse_js(self, src: str) -> list:
+        with tempfile.NamedTemporaryFile(suffix=".js", delete=False) as f:
+            f.write(textwrap.dedent(src).encode())
+            path = f.name
+        try:
+            return extract_defines(path)
+        finally:
+            os.unlink(path)
+
+    def test_py_single_line_function(self):
+        src = "def foo(): pass\n"
+        defs = self._parse_py(src)
+        d = next(d for d in defs if d.name == "foo")
+        assert d.start_line == 1
+        assert d.end_line == 1
+
+    def test_py_multiline_function(self):
+        src = """\
+            def foo(x, y):
+                a = x + 1
+                b = y + 2
+                c = a + b
+                return c
+        """
+        defs = self._parse_py(src)
+        d = next(d for d in defs if d.name == "foo")
+        assert d.start_line == 1
+        assert d.end_line == 5
+
+    def test_py_second_function_correct_start(self):
+        src = """\
+            def foo():
+                return 1
+
+
+            def bar():
+                return 2
+        """
+        defs = self._parse_py(src)
+        bar = next(d for d in defs if d.name == "bar")
+        assert bar.start_line == 5
+
+    def test_py_method_in_class(self):
+        src = """\
+            class MyClass:
+                def method(self):
+                    return 42
+        """
+        defs = self._parse_py(src)
+        m = next(d for d in defs if d.name == "method")
+        assert m.start_line == 2
+        assert m.end_line == 3
+
+    def test_js_function_declaration(self):
+        src = """\
+            function hello(name) {
+              return 'hi ' + name;
+            }
+        """
+        defs = self._parse_js(src)
+        d = next(d for d in defs if d.name == "hello")
+        assert d.start_line == 1
+        assert d.end_line == 3
+
+    def test_js_arrow_function(self):
+        src = """\
+            const greet = (x) => {
+              return x;
+            };
+        """
+        defs = self._parse_js(src)
+        d = next(d for d in defs if d.name == "greet")
+        assert d.start_line == 1
+        assert d.end_line == 3
+
+    def test_js_class_method(self):
+        src = """\
+            class Foo {
+              bar(x) {
+                return x + 1;
+              }
+            }
+        """
+        defs = self._parse_js(src)
+        d = next(d for d in defs if d.name == "bar")
+        assert d.start_line == 2
+        assert d.end_line == 4
+
+    def test_cjs_define_has_line_range(self):
+        src = """\
+            module.exports = {
+              use: function use(fn) { return fn; },
+            };
+        """
+        defs = self._parse_js(src)
+        d = next(d for d in defs if d.name == "use")
+        assert d.start_line >= 1
+        assert d.end_line >= d.start_line
+
+    def test_iife_inner_function_has_line_range(self):
+        src = """\
+            (function() {
+              function helper(x) {
+                return x + 1;
+              }
+            })();
+        """
+        defs = self._parse_js(src)
+        d = next(d for d in defs if d.name == "helper")
+        assert d.start_line == 2
+        assert d.end_line == 4
+
+    def test_start_line_always_lte_end_line(self):
+        src = """\
+            def short(): return 1
+            def multi():
+                x = 1
+                return x
+        """
+        defs = self._parse_py(src)
+        for d in defs:
+            assert d.start_line <= d.end_line, \
+                f"{d.name}: start_line={d.start_line} > end_line={d.end_line}"
+            assert d.start_line > 0

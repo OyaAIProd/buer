@@ -230,6 +230,8 @@ def reconcile(
                 return_type=define.return_type,
                 fine_fingerprint=fine,
                 file_mtime=_file_mtime,
+                start_line=define.start_line,
+                end_line=define.end_line,
             )
 
             # Equivalence class: uses fine fingerprint so receiver-distinguished defines
