@@ -826,6 +826,22 @@ class Store:
         ).fetchall()
         return [(r["classname"], r["name"]) for r in rows]
 
+    def distinct_test_case_triples(
+        self, project_id: int
+    ) -> list[tuple[str, str, Optional[str]]]:
+        """All distinct (classname, name, file_path) from test_cases for this project.
+
+        Like distinct_test_case_pairs but includes file_path for file-level matching.
+        """
+        rows = self.con.execute(
+            """SELECT DISTINCT tc.classname, tc.name, tc.file_path
+               FROM test_cases tc
+               JOIN test_runs tr ON tc.test_run_id = tr.id
+               WHERE tr.project_id = ?""",
+            (project_id,),
+        ).fetchall()
+        return [(r["classname"], r["name"], r["file_path"]) for r in rows]
+
     def nearest_seq_for_mtime(self, project_id: int, mtime_iso: str) -> Optional[int]:
         """Return the seq of the determination whose created_at is closest to mtime_iso.
 

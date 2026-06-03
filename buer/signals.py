@@ -356,6 +356,16 @@ def _find_test_cases_for_define(
     if matched:
         return matched, "heuristic"
 
+    # File-level heuristic: match test/source file stems (strict equality after stripping test_ prefix).
+    # Falls back here only when both precise and function-name heuristic miss.
+    matched_file: list[str] = []
+    for classname, name, tc_file_path in store.distinct_test_case_triples(project_id):
+        identifier = tc_file_path if tc_file_path else classname
+        if testscan.test_stem_matches_source(identifier, file_path):
+            matched_file.append(f"{classname}::{name}")
+    if matched_file:
+        return matched_file, "heuristic"
+
     return [], "none"
 
 

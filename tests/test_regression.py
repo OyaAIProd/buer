@@ -373,3 +373,124 @@ class TestRegressionVsDebugLoop:
 
         assert len(_open_incs(store, pid, "debug_loop")) == 0
         assert len(_open_incs(store, pid, "regression")) == 1
+
+
+# ---------------------------------------------------------------------------
+# File-level heuristic tier (§改动3: test/source stem matching)
+# ---------------------------------------------------------------------------
+
+# Scenario: api_jwt.py (source) ↔ test_api_jwt (test classname)
+# Define "validate_token" won't match "test_encode" via function-name heuristic,
+# but file stems "api_jwt" == "api_jwt" → file-level match fires.
+_FL_PROD_FILE = "/test/src/api_jwt.py"
+_FL_PROD_DEFINE = "validate_token"
+_FL_TC_CLASS = "tests.test_api_jwt.TestEncode"   # → stem test_api_jwt → api_jwt
+_FL_TC_NAME = "test_encode"                       # function-name heuristic → "encode" ≠ validate_token
+_FL_TC_ID = f"{_FL_TC_CLASS}::{_FL_TC_NAME}"
+
+_FL_OTHER_CLASS = "tests.test_other"              # → stem other ≠ api_jwt
+
+
+def _fl_insert_run(store, pid, seq, classname, name, status):
+    run_id = store.insert_test_run(
+        pid, seq=seq, source_path=f"/t/fl_{seq}.xml",
+        source_mtime=f"2024-02-01T{seq:02d}:00:00Z",
+        passed=(1 if status == "passed" else 0),
+        failed=(1 if status in ("failed", "error") else 0),
+        skipped=0,
+    )
+    store.insert_test_case(run_id, classname=classname, name=name,
+                           file_path=None, status=status)
+    return run_id
+
+
+class TestFileLevelHeuristic:
+    def test_fires_via_file_stem_match(self):
+        """File-level: api_jwt.py ↔ test_api_jwt classname → regression fires (no coverage, no func-name match)."""
+        store = _mem_store()
+        pid = _project(store)
+        _fl_insert_run(store, pid, 1, _FL_TC_CLASS, _FL_TC_NAME, "passed")
+        det_id = store.insert_determination(
+            pid, seq=2, file_path=_FL_PROD_FILE, define_name=_FL_PROD_DEFINE,
+            node_fingerprint="flp2", edit_type="modify",
+        )
+        _fl_insert_run(store, pid, 2, _FL_TC_CLASS, _FL_TC_NAME, "failed")
+
+        signals.detect_regression(store, pid, [(_FL_PROD_FILE, _FL_PROD_DEFINE, det_id)], ROOT, EMPTY_IDX)
+
+        incs = _open_incs(store, pid, "regression")
+        assert len(incs) == 1
+        assert incs[0]["target_node"] == _FL_TC_ID
+
+    def test_no_fire_stem_mismatch(self):
+        """Strict stem equality: test_other (stem 'other') ≠ api_jwt → no association, no fire."""
+        store = _mem_store()
+        pid = _project(store)
+        _fl_insert_run(store, pid, 1, _FL_OTHER_CLASS, "test_something", "passed")
+        det_id = store.insert_determination(
+            pid, seq=2, file_path=_FL_PROD_FILE, define_name=_FL_PROD_DEFINE,
+            node_fingerprint="flp2", edit_type="modify",
+        )
+        _fl_insert_run(store, pid, 2, _FL_OTHER_CLASS, "test_something", "failed")
+
+        signals.detect_regression(store, pid, [(_FL_PROD_FILE, _FL_PROD_DEFINE, det_id)], ROOT, EMPTY_IDX)
+        assert _open_incs(store, pid, "regression") == []
+
+    def test_precise_takes_priority(self):
+        """When coverage_map has a precise entry, precise tier is used (not overridden by file-level)."""
+        store = _mem_store()
+        pid = _project(store)
+        # Precise coverage: TC_ID (the existing constant) covers DEFINE
+        store.insert_coverage_entry(pid, TC_ID, f"src/auth.{DEFINE}")
+        _insert_run(store, pid, seq=1, classname=TC_CLASS, name=TC_NAME, status="passed")
+        det_id = _insert_det(store, pid, seq=2)
+        _insert_run(store, pid, seq=2, classname=TC_CLASS, name=TC_NAME, status="failed")
+
+        signals.detect_regression(store, pid, [(FILE, DEFINE, det_id)], ROOT, EMPTY_IDX)
+
+        incs = _open_incs(store, pid, "regression")
+        assert len(incs) == 1
+        # Precise tier means target_node is TC_ID (auth.py test), not any file-level match
+        assert incs[0]["target_node"] == TC_ID
+
+    def test_tampering_safe_with_file_heuristic(self):
+        """Prod define in window has only file-level (heuristic) link → test_tampering does not fire."""
+        from buer import signals as _sig
+
+        store = _mem_store()
+        pid = _project(store)
+
+        # Red run at seq=1, green at seq=2 for the test case
+        run1 = store.insert_test_run(
+            pid, seq=1, source_path="/t/r1.xml", source_mtime="2024-02-01T01:00:00Z",
+            passed=0, failed=1, skipped=0,
+        )
+        store.insert_test_case(run1, classname=_FL_TC_CLASS, name=_FL_TC_NAME,
+                               file_path=None, status="failed")
+
+        # Production define modified inside window (seq=2)
+        # No coverage_map, no function-name match → only file-level heuristic (tier=heuristic)
+        store.insert_determination(
+            pid, seq=2, file_path=_FL_PROD_FILE, define_name=_FL_PROD_DEFINE,
+            node_fingerprint="flp2", edit_type="modify",
+        )
+
+        run2 = store.insert_test_run(
+            pid, seq=2, source_path="/t/r2.xml", source_mtime="2024-02-01T02:00:00Z",
+            passed=1, failed=0, skipped=0,
+        )
+        store.insert_test_case(run2, classname=_FL_TC_CLASS, name=_FL_TC_NAME,
+                               file_path=None, status="passed")
+
+        # Also need a test-define in affected so condition 2 passes
+        test_file = "/test/test_api_jwt.py"
+        test_det = store.insert_determination(
+            pid, seq=10, file_path=test_file, define_name="test_encode",
+            node_fingerprint="flt10", edit_type="modify",
+        )
+        affected = [(test_file, "test_encode", test_det)]
+
+        _sig.detect_test_tampering(store, pid, affected, ROOT, EMPTY_IDX)
+
+        # Tier is heuristic → condition 3 sets should_fire=False → no incident
+        assert _open_incs(store, pid, "test_tampering") == []

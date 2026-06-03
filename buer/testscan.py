@@ -415,6 +415,55 @@ def heuristic_defines_for_testcase(
 
 
 # ---------------------------------------------------------------------------
+# File-level naming convention matcher (§改动1)
+# ---------------------------------------------------------------------------
+
+_TC_FILE_SUFFIXES = (
+    ".test.ts", ".spec.ts", ".test.tsx", ".spec.tsx",
+    ".test.js", ".spec.js", ".test.jsx", ".spec.jsx",
+    ".py", ".ts", ".tsx", ".js", ".jsx",
+)
+
+
+def test_stem_matches_source(test_identifier: str, source_file_path: str) -> bool:
+    """True when test_identifier names the same module as source_file_path by convention.
+
+    Accepts a test file path OR a dotted classname as test_identifier.
+    Strips test_ prefix / _test/_spec suffix, then compares stems with strict equality.
+    """
+    source_stem = os.path.splitext(os.path.basename(source_file_path))[0]
+    if not source_stem:
+        return False
+
+    if "/" in test_identifier or os.sep in test_identifier or _is_file_path_classname(test_identifier):
+        # File path — extract and normalise the basename
+        basename = os.path.basename(test_identifier)
+        for suffix in _TC_FILE_SUFFIXES:
+            if basename.endswith(suffix):
+                basename = basename[: -len(suffix)]
+                break
+        else:
+            basename = os.path.splitext(basename)[0]
+        test_stem = re.sub(r"^test_", "", basename, flags=re.IGNORECASE)
+        test_stem = re.sub(r"(?:_test|_spec)$", "", test_stem, flags=re.IGNORECASE)
+    else:
+        # Dotted classname — find the test_ or _test segment
+        segments = test_identifier.split(".")
+        test_seg = next(
+            (s for s in segments
+             if re.match(r"^test_", s, re.IGNORECASE)
+             or re.search(r"_test$", s, re.IGNORECASE)),
+            None,
+        )
+        if test_seg is None:
+            return False
+        test_stem = re.sub(r"^test_", "", test_seg, flags=re.IGNORECASE)
+        test_stem = re.sub(r"(?:_test|_spec)$", "", test_stem, flags=re.IGNORECASE)
+
+    return bool(test_stem) and source_stem == test_stem
+
+
+# ---------------------------------------------------------------------------
 # Main ingestion entry point
 # ---------------------------------------------------------------------------
 
