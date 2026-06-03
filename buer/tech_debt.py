@@ -29,12 +29,30 @@ import collections
 from buer import callgraph
 from buer.store import Store
 
-# ── thresholds (待校准 — pending dogfooding calibration) ─────────────────────
-THETA_DEBT_CALLERS: int = 5    # 待校准
-THETA_DEBT_CALLEES: int = 8    # 待校准
-THETA_DEBT_CHURN: int   = 10   # 待校准
-THETA_DEBT_LAMBDA: int  = 20   # 待校准 — Λ=61/60 for deep capability-cluster nodes on a real-world graph
+# ── thresholds (calibrated on 15 Python + JS/TS projects) ────────────────────
+THETA_DEBT_CALLERS: int      = 5    # calibrated: fan-in ≥5 hits 1–2.7%, stable
+THETA_DEBT_CALLEES: int      = 6    # calibrated: was 8 (hit 0% on flat projects); 6 still <2%, fires
+THETA_DEBT_CHURN: int        = 10   # 待校准 (behaviour-temporal; needs real session data)
+THETA_DEBT_LAMBDA: int       = 20   # fallback only — used when project too small for P95 (see below)
+LAMBDA_PCT: float            = 95.0 # per-project percentile for Λ threshold (relative, portable)
+MIN_DEFINES_FOR_LAMBDA_PCT: int = 50  # minimum define count before using P95; else fallback to THETA_DEBT_LAMBDA
 TOP_N_DEBT: int = 5
+
+
+def _percentile(values: list, p: float) -> float:
+    """Linear-interpolation percentile. Pure Python; no numpy dependency."""
+    if not values:
+        raise ValueError("empty sequence")
+    s = sorted(values)
+    n = len(s)
+    if n == 1:
+        return float(s[0])
+    idx = p / 100.0 * (n - 1)
+    lo = int(idx)
+    hi = lo + 1
+    if hi >= n:
+        return float(s[-1])
+    return s[lo] + (idx - lo) * (s[hi] - s[lo])
 
 
 def structural_concerns(
@@ -104,8 +122,8 @@ def structural_concerns(
     ):
         gd_pred[r["to_det"]].append(r["from_det"])
 
-    # ── (E) per-define computation — zero additional DB queries ───────────────
-    concerns: list[dict] = []
+    # ── Phase 1: collect raw metrics for all defines — zero additional DB queries
+    raw: list[dict] = []
     for (fp, dn), det_id in latest_det.items():
         try:
             mod = callgraph.module_name_of(fp, root)
@@ -132,28 +150,40 @@ def structural_concerns(
         cone_fqns: set[str] = {det_fqn[d] for d in visited if d in det_fqn}
         lambda_ = sum(callers_count.get(f, 0) for f in cone_fqns)
 
-        hit_dims: list[str] = []
-        if callers >= THETA_DEBT_CALLERS:
-            hit_dims.append("callers")
-        if callees >= THETA_DEBT_CALLEES:
-            hit_dims.append("callees")
-        if churn >= THETA_DEBT_CHURN:
-            hit_dims.append("churn")
-        if lambda_ >= THETA_DEBT_LAMBDA:
-            hit_dims.append("lambda")
-
-        if not hit_dims:
-            continue
-
-        concerns.append({
+        raw.append({
             "target_node": f"{fp}::{dn}",
             "define_name": dn,
             "callers":     callers,
             "callees":     callees,
             "churn":       churn,
             "lambda_":     lambda_,
-            "hit_dims":    hit_dims,
         })
+
+    # ── Phase 2: dynamic Λ threshold, then filter ─────────────────────────────
+    # Local quantity (callers/callees/churn) use absolute thresholds — stable across
+    # project sizes. Cumulative cone quantity (Λ) varies 20× across projects, so
+    # we use a per-project P95 when there are enough defines; else fall back to the
+    # fixed THETA_DEBT_LAMBDA to avoid false silence on tiny projects.
+    all_lambdas = [r["lambda_"] for r in raw]
+    if len(all_lambdas) >= MIN_DEFINES_FOR_LAMBDA_PCT:
+        lambda_threshold: float = _percentile(all_lambdas, LAMBDA_PCT)
+    else:
+        lambda_threshold = float(THETA_DEBT_LAMBDA)
+
+    concerns: list[dict] = []
+    for r in raw:
+        hit_dims: list[str] = []
+        if r["callers"] >= THETA_DEBT_CALLERS:
+            hit_dims.append("callers")
+        if r["callees"] >= THETA_DEBT_CALLEES:
+            hit_dims.append("callees")
+        if r["churn"] >= THETA_DEBT_CHURN:
+            hit_dims.append("churn")
+        if r["lambda_"] >= lambda_threshold:
+            hit_dims.append("lambda")
+        if not hit_dims:
+            continue
+        concerns.append({**r, "hit_dims": hit_dims})
 
     concerns.sort(
         key=lambda c: (
@@ -174,7 +204,7 @@ def _dim_description(c: dict) -> str:
         parts.append(f"modified {c['churn']} times (high churn)")
     if "lambda" in c["hit_dims"]:
         lam = c.get("lambda_", 0)
-        parts.append(f"accumulated constraint load Λ={lam} (deep dependency chain; upstream changes propagate widely)")
+        parts.append(f"accumulated constraint load Λ={lam} (deep dependency chain; upstream changes propagate widely; exceeds this project's P95)")
     return ", ".join(parts)
 
 

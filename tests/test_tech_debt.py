@@ -26,11 +26,14 @@ from buer import tech_debt
 from buer.health import project_overview
 from buer.store import Store
 from buer.tech_debt import (
+    LAMBDA_PCT,
+    MIN_DEFINES_FOR_LAMBDA_PCT,
     THETA_DEBT_CALLERS,
     THETA_DEBT_CALLEES,
     THETA_DEBT_CHURN,
     THETA_DEBT_LAMBDA,
     TOP_N_DEBT,
+    _percentile,
     format_debt_section,
     structural_concerns,
 )
@@ -498,3 +501,72 @@ class TestFourDimOrthogonality:
         assert c["callers"] == 7
         assert c["callees"] == 9
         assert c["churn"] == 12
+
+
+# ── _percentile helper ────────────────────────────────────────────────────────
+
+class TestPercentileHelper:
+    def test_basic_correctness(self):
+        vals = [0.0, 1.0, 2.0, 3.0, 4.0]
+        assert _percentile(vals, 50) == 2.0
+        assert _percentile(vals, 75) == 3.0
+        assert _percentile(vals, 100) == 4.0
+
+    def test_single_element(self):
+        assert _percentile([7.0], 50) == 7.0
+
+    def test_empty_raises(self):
+        with pytest.raises(ValueError):
+            _percentile([], 50)
+
+
+# ── Λ scale-gate: small project fallback vs large project P95 ─────────────────
+
+class TestLambdaScaleGate:
+    def test_small_project_uses_fixed_threshold(self, tmp_path):
+        """< MIN_DEFINES_FOR_LAMBDA_PCT defines → fallback to THETA_DEBT_LAMBDA; lambda=15 does not fire."""
+        store, pid, root = _make_store(tmp_path)
+        fp_a, det_a = _add_define_get_det(store, pid, tmp_path, "target", "a.py", seq=1)
+        fp_b, det_b = _add_define_get_det(store, pid, tmp_path, "upstream", "b.py", seq=2)
+        store.insert_gd_edge(pid, from_det=det_b, to_det=det_a, edge_class="cross_define_callgraph")
+        for i in range(THETA_DEBT_LAMBDA - 5):  # 15 callers → lambda=15 < fallback=20
+            store.upsert_call_edge(pid, f"c_{i}.x", "py::b.upstream", "call")
+        concerns = structural_concerns(store, pid, root)
+        c = next((c for c in concerns if c["define_name"] == "target"), None)
+        assert c is None or "lambda" not in c["hit_dims"]
+
+    def test_large_project_p95_below_fixed_threshold(self, tmp_path):
+        """≥ MIN_DEFINES_FOR_LAMBDA_PCT defines → P95 threshold; node above P95 but below 20 fires."""
+        store, pid, root = _make_store(tmp_path)
+        # 46 flat filler defines (lambda=0)
+        for i in range(46):
+            _add_define(store, pid, tmp_path, f"filler_{i}")
+        # 4 mid-defines with lambda=12 each (pushes P95 to ~12 across 56 total defines)
+        for j in range(4):
+            fp_m, det_m = _add_define_get_det(store, pid, tmp_path, f"mid_{j}", f"mid{j}.py", seq=100 + j)
+            fp_s, det_s = _add_define_get_det(store, pid, tmp_path, f"src_{j}", f"src{j}.py", seq=200 + j)
+            store.insert_gd_edge(pid, from_det=det_s, to_det=det_m, edge_class="cross_define_callgraph")
+            for k in range(12):
+                store.upsert_call_edge(pid, f"c{j}_{k}.x", f"py::src{j}.src_{j}", "call")
+        # Target with lambda=14 (above P95≈12, below THETA_DEBT_LAMBDA=20) — fires only via P95
+        fp_t, det_t = _add_define_get_det(store, pid, tmp_path, "target", "target.py", seq=300)
+        fp_u, det_u = _add_define_get_det(store, pid, tmp_path, "big_up", "bigup.py", seq=301)
+        store.insert_gd_edge(pid, from_det=det_u, to_det=det_t, edge_class="cross_define_callgraph")
+        for k in range(14):
+            store.upsert_call_edge(pid, f"tc_{k}.x", "py::bigup.big_up", "call")
+        concerns = structural_concerns(store, pid, root)
+        target = next((c for c in concerns if c["define_name"] == "target"), None)
+        assert target is not None and "lambda" in target["hit_dims"]
+
+
+# ── CALLEES new threshold = 6 ─────────────────────────────────────────────────
+
+class TestCalleesNewThreshold:
+    def test_callees_six_fires(self, tmp_path):
+        """THETA_DEBT_CALLEES=6: exactly 6 callees now enters concerns (was threshold=8)."""
+        store, pid, root = _make_store(tmp_path)
+        _add_define(store, pid, tmp_path, "fn_wide")
+        _add_callees(store, pid, _fqn("fn_wide"), 6)
+        concerns = structural_concerns(store, pid, root)
+        assert any(c["define_name"] == "fn_wide" and "callees" in c["hit_dims"]
+                   for c in concerns)
