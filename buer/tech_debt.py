@@ -4,8 +4,11 @@ Four observable dimensions:
   callers  — how many places depend on this define (high → broad blast-radius)
   callees  — how many other defines this depends on (high → high maintenance cost)
   churn    — how many edit rounds (high → repeatedly modified, possibly unstable)
-  lambda_  — Λ: constraint-load accumulation (GD Def 6.4 / Thm 6.7)
+  lambda_  — Λ: constraint-load accumulation, approximating GD Def 6.4 / Thm 6.7.
              = Σ_{w in gd_predecessor_cone(v)} callers_count(w)
+             callers_count(w) is an engineering proxy for |ρ(w)| (Def 6.4 的约束集
+             大小), not the exact ρ of the theory; the dimension stays directionally
+             faithful (deep upstream coupling) while not claiming exact correspondence.
              Identifies "deep but not wide" structural coupling: a define with few
              direct callers but many upstream cross-define dependencies whose
              callers could all be affected by changes here.
