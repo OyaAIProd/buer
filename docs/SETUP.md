@@ -111,6 +111,74 @@ curl -s http://127.0.0.1:7777/buer/health | python3 -m json.tool
 
 ---
 
+## Precise Test–Define Association (opt-in)
+
+By default, BUER associates test cases with production defines using **heuristic matching**:
+function-name similarity (e.g. `test_parse_query_string` → `parse_query_string`) plus
+file-stem matching (e.g. `test_urlutils.py` covers `urlutils.py` defines). This works
+without any extra configuration and is sufficient for most signal detection.
+
+You can upgrade to **precise tier** by running pytest with dynamic context tracing.
+Precise tier reads which lines each test actually executed and uses that to create
+exact test↔define mappings — no naming guesswork.
+
+### How to enable
+
+Run pytest with coverage context tracing enabled (requires the `coverage` package,
+already a dependency of `pytest-cov`):
+
+```bash
+pytest --cov=src --cov-context=test --cov-report=
+# or with an explicit output path:
+pytest --cov=. --cov-context=test --cov-report= --junitxml=junit.xml
+```
+
+This writes a `.coverage` SQLite file at the project root. BUER reads it automatically
+on the next reconcile after a file edit — no further configuration needed.
+
+> **Order matters:** JUnit XML must be ingested first (BUER uses it to build the test_case
+> index). Run pytest with both `--junitxml` and `--cov-context=test` in the same invocation.
+
+### What changes with precise tier
+
+| Scenario | Heuristic tier | Precise tier |
+|---|---|---|
+| `test_foo` → `foo` (name match) | ✓ matched | ✓ matched (if lines covered) |
+| `test_bar` → `foo` (no name match, same file) | ✓ matched (broad) | ✗ excluded (not covered) |
+| `test_baz` in a different file | ✗ excluded | ✓ included (if lines covered) |
+
+Precise tier is **narrower**: it only links a test to a define when the test actually
+executed lines inside that define. This reduces false positives in `regression` (an
+unrelated test failing doesn't implicate your define) and in `test_tampering` condition 3
+(the coverage check is authoritative rather than inferred from naming).
+
+The `test_tier` field in incident details records which tier triggered the signal
+(`"precise"` or `"heuristic"`).
+
+### Known boundaries
+
+Precise tier works reliably when:
+
+- pytest is used with `pytest-cov` and the standard `--cov-context=test` flag
+- The project follows standard pytest rootdir layout: coverage file paths and JUnit
+  classnames both derive from the same root, so the dotted-module form of the coverage
+  path (`tests/test_urlutils.py` → `tests.test_urlutils`) matches the JUnit classname
+  (`tests.test_urlutils.TestParseQueryString`)
+
+Precise tier falls back to heuristic silently when:
+
+- The `coverage` package is not installed
+- `.coverage` is absent (pytest was run without `--cov-context=test`)
+- `src` layout or custom `pythonpath` / `rootdir` causes the coverage path → dotted-module
+  conversion to produce a different string than the JUnit classname
+- JUnit classnames were customized (e.g. via `junit_family` or a custom reporter)
+
+In all fallback cases, BUER continues working via heuristic tier — signals fire normally,
+just with broader (less precise) test associations. **Precise tier is an enhancement,
+not a prerequisite.**
+
+---
+
 ## Notification Level
 
 The only user-facing tuning knob. Controls **how often BUER proactively alerts you** — not how sensitive detection is (BUER always monitors at full sensitivity).

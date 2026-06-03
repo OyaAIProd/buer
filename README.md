@@ -17,6 +17,8 @@ BUER acts as a local structure monitor that works via a two-way loop:
 
 **Everything is 100% auto-derived.** BUER reads off objective code facts from what the agent already produces (file modifications, git state, test output). The agent is never asked to declare its intent or cooperate. It works perfectly even with chaotic agents and vibe coders.
 
+BUER's test–define association starts from heuristic name matching (always available, no setup) and upgrades to **precise tier** when pytest is run with `--cov-context=test` — see [docs/SETUP.md](docs/SETUP.md#precise-testdefine-association-opt-in) for details.
+
 ---
 
 ## ⚡ Why BUER? (The Agent Observability Gap)
@@ -28,7 +30,7 @@ BUER bridges this gap by operating directly on a local Directed Acyclic Graph ($
 | The AI Agent Blindspots | How BUER Solves It (100% Auto-Derived) |
 | :--- | :--- |
 | **P1: Infinite Loops & Churn** | `stuck_region` / `define_loop` / `token_waste` — detects when code state fails to structurally converge |
-| **P2: "Fix one, break ten"** | `regression` — instantly links test failures back to the exact structural edits via call graph |
+| **P2: "Fix one, break ten"** | `regression` — links test failures back to the structural edits via call graph; upgrades to exact test↔define mapping when pytest `--cov-context=test` is present |
 | **P3: Cheating / Faking Success** | `test_tampering` — escalates *immediately* to humans if the agent mutates test assertions to bypass failures |
 | **P4: Scope Drift / Running Amok** | `boundary_breach` + `task_scope_breach` — rigid local guardrails |
 | **P5: Lost Context on Resume** | `BUER Recap` — plain-language summary of the previous session's changes and unresolved issues |
