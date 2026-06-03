@@ -297,6 +297,115 @@ def parse_coverage(path: str) -> list[tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
+# .coverage dynamic contexts (pytest --cov-context=test, §4.5 precise tier)
+# ---------------------------------------------------------------------------
+
+def _locate_dot_coverage(root: str) -> list[str]:
+    """Return [path] if a pytest .coverage SQLite file exists at project root."""
+    p = os.path.join(root, ".coverage")
+    return [p] if os.path.isfile(p) else []
+
+
+def _context_to_testcase_key(ctx: str) -> tuple[Optional[str], Optional[str]]:
+    """Convert a coverage context string to (classname, name) matching JUnit format.
+
+    'tests/test_foo.py::ClassName::method|run' → ('tests.test_foo.ClassName', 'method')
+    'tests/test_foo.py::test_func|run'         → ('tests.test_foo', 'test_func')
+    """
+    parts = ctx.split("::")
+    if len(parts) < 2:
+        return None, None
+    module = parts[0]
+    if module.endswith(".py"):
+        module = module[:-3]
+    module = module.replace("/", ".").replace("\\", ".").lstrip(".")
+    name_raw = parts[-1]
+    if "|" in name_raw:
+        name_raw = name_raw[: name_raw.index("|")]
+    if len(parts) == 2:
+        return module, name_raw
+    return f"{module}.{parts[1]}", name_raw
+
+
+def _parse_coverage_contexts(
+    cov_path: str, store: "Store", project_id: int, root: str
+) -> list[tuple[str, str]]:
+    """Parse .coverage dynamic contexts → [(testcase_id, define_name), ...].
+
+    Requires the `coverage` package (optional dependency).
+    Returns [] silently when the package is absent or the file is unreadable.
+    Only emits entries for test cases already known in test_cases table.
+    """
+    try:
+        from coverage import CoverageData
+    except ImportError:
+        return []
+    try:
+        cd = CoverageData(basename=cov_path)
+        cd.read()
+    except Exception:
+        return []
+
+    # Index known test cases: (classname, name) → "classname::name"
+    known_tcs: dict[tuple[str, str], str] = {}
+    for classname, name, _fp in store.distinct_test_case_triples(project_id):
+        known_tcs[(classname, name)] = f"{classname}::{name}"
+    if not known_tcs:
+        return []
+
+    # Build define ranges index from latest non-deleted determinations with valid ranges
+    rows = store.con.execute(
+        """SELECT file_path, define_name, start_line, end_line
+           FROM determinations
+           WHERE project_id=? AND edit_type != 'delete' AND start_line > 0 AND end_line > 0
+             AND id IN (
+                 SELECT MAX(id) FROM determinations
+                 WHERE project_id=? AND edit_type != 'delete'
+                 GROUP BY file_path, define_name
+             )""",
+        (project_id, project_id),
+    ).fetchall()
+    file_defines: dict[str, list[tuple[str, int, int]]] = {}
+    for row in rows:
+        real_fp = os.path.realpath(row["file_path"])
+        file_defines.setdefault(real_fp, []).append(
+            (row["define_name"], row["start_line"], row["end_line"])
+        )
+
+    entries: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for measured_file in cd.measured_files():
+        real_mf = os.path.realpath(measured_file)
+        defines_in_file = file_defines.get(real_mf)
+        if not defines_in_file:
+            continue
+        try:
+            contexts_by_line = cd.contexts_by_lineno(measured_file)
+        except Exception:
+            continue
+        for lineno, contexts in contexts_by_line.items():
+            for dn, sl, el in defines_in_file:
+                if sl <= lineno <= el:
+                    for ctx in contexts:
+                        if not ctx:
+                            continue
+                        ctx_clean = ctx.split("|")[0]
+                        classname, name = _context_to_testcase_key(ctx_clean)
+                        if classname is None:
+                            continue
+                        tc_id = known_tcs.get((classname, name))
+                        if tc_id is None:
+                            continue
+                        key = (tc_id, dn)
+                        if key not in seen:
+                            seen.add(key)
+                            entries.append((tc_id, dn))
+
+    return entries
+
+
+# ---------------------------------------------------------------------------
 # Heuristic testcase ↔ define association (§4.5 启发档, §5.3 标降级)
 # ---------------------------------------------------------------------------
 
@@ -522,6 +631,27 @@ def scan_test_results(store: Store, project_id: int, root: str) -> None:
             store.insert_coverage_entry(project_id, test_case, define_name)
 
         # Record the coverage file as ingested so we don't re-process it.
+        store.insert_test_run(
+            project_id,
+            seq=None,
+            source_path=cov_path,
+            source_mtime=mtime,
+            passed=0,
+            failed=0,
+            skipped=0,
+        )
+
+    # ── .coverage dynamic contexts (pytest --cov-context=test) ───────────────
+    for cov_path in _locate_dot_coverage(root):
+        mtime = _mtime_iso(cov_path)
+        if store.test_run_already_ingested(project_id, cov_path, mtime):
+            continue
+        try:
+            entries = _parse_coverage_contexts(cov_path, store, project_id, root)
+        except Exception:
+            continue
+        for test_case, define_name in entries:
+            store.insert_coverage_entry(project_id, test_case, define_name)
         store.insert_test_run(
             project_id,
             seq=None,
