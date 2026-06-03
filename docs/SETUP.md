@@ -239,9 +239,7 @@ silencing those would defeat the purpose.
 ## Cost Tracking (optional)
 
 BUER can receive Claude Code telemetry and show a savings report. **Privacy:** only numeric metrics
-(tokens/cost) — no conversation content, no code.
-
-Add to `~/.claude/settings.json`:
+(tokens/cost) — no conversation content or code — reach BUER. Add to `~/.claude/settings.json`:
 
 ```json
 {
