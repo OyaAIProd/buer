@@ -1618,6 +1618,127 @@ def _find_callable_deep(vd):
     return _rec(vd)
 
 
+def _is_module_exports(node) -> bool:
+    """True if node is the ``module.exports`` member_expression."""
+    if node.type != "member_expression":
+        return False
+    nc = [c for c in node.children if c.is_named]
+    return (
+        len(nc) == 2
+        and nc[0].type == "identifier"
+        and nc[0].text.decode() == "module"
+        and nc[1].text.decode() == "exports"
+    )
+
+
+def _extract_object_methods(
+    obj_node,
+    obj_name: Optional[str],
+    class_prefix: Optional[str],
+    file_path: str,
+    file_return_types: Optional[dict],
+    out: list,
+) -> None:
+    """Extract defines from an object literal node.
+
+    obj_name=None yields bare method names (module.exports = { fn: … } pattern).
+    obj_name set yields ``obj_name.method`` qualified names (const obj = { … }).
+    """
+    for prop in obj_node.children:
+        if prop.type == "method_definition":
+            mname = _js_method_name(prop)
+            if not mname or _child_of_type(prop, "statement_block") is None:
+                continue
+            pq = f"{obj_name}.{mname}" if obj_name else mname
+            full_qname = f"{class_prefix}.{pq}" if class_prefix else pq
+            out.append(_extract_js_callable(prop, mname, full_qname, file_path,
+                                             file_return_types=file_return_types))
+        elif prop.type == "pair":
+            key_node = next(
+                (ch for ch in prop.children
+                 if ch.type in ("property_identifier", "string", "identifier")),
+                None,
+            )
+            val_node = next(
+                (ch for ch in prop.children if ch.type in _CALLABLE_TYPES),
+                None,
+            )
+            if key_node is None or val_node is None:
+                continue
+            pname = key_node.text.decode().strip("'\"")
+            pq = f"{obj_name}.{pname}" if obj_name else pname
+            full_pq = f"{class_prefix}.{pq}" if class_prefix else pq
+            out.append(_extract_js_callable(val_node, pname, full_pq, file_path,
+                                             file_return_types=file_return_types))
+
+
+def _handle_cjs_assignment(
+    assign_node,
+    class_prefix: Optional[str],
+    file_path: str,
+    file_return_types: Optional[dict],
+    out: list,
+) -> None:
+    """Handle CommonJS assignment expression patterns.
+
+    (A) module.exports = { fn: … }          → bare method names
+    (B) X.prototype.method = function() {}  → qualified_name = X.method
+    (C) exports.foo = fn                    → bare name foo
+        module.exports.foo = fn             → bare name foo
+    """
+    nc = [c for c in assign_node.children if c.is_named]
+    if len(nc) < 2:
+        return
+    left, right = nc[0], nc[-1]
+
+    if left.type != "member_expression":
+        return
+    left_nc = [c for c in left.children if c.is_named]
+    if len(left_nc) < 2:
+        return
+    left_obj = left_nc[0]
+    left_prop = left_nc[-1]
+    prop_name = left_prop.text.decode()
+
+    # Pattern A: module.exports = { … }
+    if _is_module_exports(left) and right.type == "object":
+        _extract_object_methods(right, None, class_prefix, file_path, file_return_types, out)
+        return
+
+    # Pattern B: X.prototype.method = function() { … }
+    if left_obj.type == "member_expression" and right.type in _CALLABLE_TYPES:
+        obj_nc = [c for c in left_obj.children if c.is_named]
+        if (len(obj_nc) == 2
+                and obj_nc[0].type == "identifier"
+                and obj_nc[1].text.decode() == "prototype"):
+            class_name = obj_nc[0].text.decode()
+            qname_local = f"{class_name}.{prop_name}"
+            full_qname = f"{class_prefix}.{qname_local}" if class_prefix else qname_local
+            out.append(_extract_js_callable(right, prop_name, full_qname, file_path,
+                                             file_return_types=file_return_types))
+            return
+
+    # Pattern C: exports.foo = fn  or  module.exports.foo = fn
+    if right.type in _CALLABLE_TYPES:
+        is_bare_exports = (left_obj.type == "identifier"
+                           and left_obj.text.decode() == "exports")
+        is_mod_exports = _is_module_exports(left_obj)
+        if is_bare_exports or is_mod_exports:
+            full_qname = f"{class_prefix}.{prop_name}" if class_prefix else prop_name
+            out.append(_extract_js_callable(right, prop_name, full_qname, file_path,
+                                             file_return_types=file_return_types))
+            return
+
+    # Pattern D: localVar.method = fn  (module-level object method, e.g. res.send = fn)
+    if right.type in _CALLABLE_TYPES and left_obj.type == "identifier":
+        obj_name = left_obj.text.decode()
+        if obj_name not in ("module", "exports"):
+            qname_local = f"{obj_name}.{prop_name}"
+            full_qname = f"{class_prefix}.{qname_local}" if class_prefix else qname_local
+            out.append(_extract_js_callable(right, prop_name, full_qname, file_path,
+                                             file_return_types=file_return_types))
+
+
 # ── JS/TS define collector ─────────────────────────────────────────────────────
 
 def _collect_js_defines(
@@ -1658,39 +1779,27 @@ def _collect_js_defines(
                     out.append(_extract_js_callable(val, name, qname, file_path,
                                                      file_return_types=file_return_types))
                 elif is_const:
-                    # Object method shorthand safe subset: const + direct object literal.
-                    # Conditional/identifier initializers are excluded (no extraction → no edge).
+                    # Object method shorthand: const obj = { fn: … } / const obj = { fn() {} }
                     obj_node = next((ch for ch in vd.children if ch.type == "object"), None)
-                    if obj_node is None:
-                        continue
-                    for prop in obj_node.children:
-                        if prop.type == "method_definition":
-                            mname = _js_method_name(prop)
-                            if not mname or _child_of_type(prop, "statement_block") is None:
-                                continue
-                            mq = f"{name}.{mname}"
-                            full_qname = f"{class_prefix}.{mq}" if class_prefix else mq
-                            out.append(_extract_js_callable(prop, mname, full_qname, file_path,
-                                                             file_return_types=file_return_types))
-                        elif prop.type == "pair":
-                            # Object property arrow/function: { h: () => …, h: function(){} }
-                            # Safe subset: const + direct object literal (same gate as method shorthand).
-                            key_node = next(
-                                (ch for ch in prop.children
-                                 if ch.type in ("property_identifier", "string", "identifier")),
-                                None,
-                            )
-                            val_node = next(
-                                (ch for ch in prop.children if ch.type in _CALLABLE_TYPES),
-                                None,
-                            )
-                            if key_node is None or val_node is None:
-                                continue
-                            pname = key_node.text.decode().strip("'\"")
-                            pq = f"{name}.{pname}"
-                            full_pq = f"{class_prefix}.{pq}" if class_prefix else pq
-                            out.append(_extract_js_callable(val_node, pname, full_pq, file_path,
-                                                             file_return_types=file_return_types))
+                    if obj_node is not None:
+                        _extract_object_methods(obj_node, name, class_prefix, file_path,
+                                                 file_return_types, out)
+                    else:
+                        # const proto = module.exports = { … } (chained assignment)
+                        asgn = next(
+                            (ch for ch in vd.children if ch.type == "assignment_expression"), None,
+                        )
+                        if asgn is not None:
+                            _handle_cjs_assignment(asgn, class_prefix, file_path,
+                                                   file_return_types, out)
+                else:
+                    # var/let: handle chained assignment var proto = module.exports = { … }
+                    asgn = next(
+                        (ch for ch in vd.children if ch.type == "assignment_expression"), None,
+                    )
+                    if asgn is not None:
+                        _handle_cjs_assignment(asgn, class_prefix, file_path,
+                                               file_return_types, out)
 
         elif t in ("class_declaration", "abstract_class_declaration"):
             # Class is a namespace in 𝒢_D (§3.3), not an independent node.
@@ -1754,6 +1863,14 @@ def _collect_js_defines(
                 (ch for ch in c.children if ch.type == "internal_module"), None,
             )
             if mod_node is None:
+                # CommonJS assignment: module.exports / X.prototype / exports.foo
+                if t == "expression_statement":
+                    asgn = next(
+                        (ch for ch in c.children if ch.type == "assignment_expression"), None,
+                    )
+                    if asgn is not None:
+                        _handle_cjs_assignment(asgn, class_prefix, file_path,
+                                               file_return_types, out)
                 continue
             ns_name = next(
                 (ch.text.decode() for ch in mod_node.children if ch.type == "identifier"),

@@ -757,3 +757,169 @@ class TestComputeCallEdges:
             edges = compute_call_edges(fpath, tmpdir, idx)
             # fetch is not in the project → no edge
             assert all("fetch" not in e[1] for e in edges)
+
+
+# ── CommonJS define extraction (Blind Spots A+B fix) ──────────────────────────
+
+class TestCjsDefines:
+    def _parse(self, src: str) -> list[Define]:
+        with tempfile.NamedTemporaryFile(suffix=".js", delete=False) as f:
+            f.write(textwrap.dedent(src).encode())
+            path = f.name
+        try:
+            return extract_defines(path)
+        finally:
+            os.unlink(path)
+
+    # Pattern A: module.exports = { method: function() {} }
+    def test_module_exports_object_literal(self):
+        src = """\
+            'use strict';
+            module.exports = {
+              use: function use(fn) { this.stack.push(fn); return this; },
+              handle: function handle(req, res, done) { done(); },
+            };
+        """
+        defs = self._parse(src)
+        names = {d.name for d in defs}
+        assert "use" in names
+        assert "handle" in names
+
+    def test_module_exports_bare_qualified_names(self):
+        src = """\
+            module.exports = {
+              foo: function(x) { return x; },
+              bar: function(y) { return y + 1; },
+            };
+        """
+        defs = self._parse(src)
+        qnames = {d.qualified_name for d in defs}
+        # bare names — no obj_name prefix
+        assert "foo" in qnames
+        assert "bar" in qnames
+        assert not any("." in q for q in qnames)
+
+    # Pattern B: X.prototype.method = function() {}
+    def test_prototype_method(self):
+        src = """\
+            'use strict';
+            function Layer(path, fn) { this.path = path; this.fn = fn; }
+            Layer.prototype.handle_request = function handle_request(req, res, next) {
+              this.fn(req, res, next);
+            };
+            Layer.prototype.match = function match(path) {
+              return path === this.path;
+            };
+        """
+        defs = self._parse(src)
+        names = {d.name for d in defs}
+        assert "handle_request" in names
+        assert "match" in names
+
+    def test_prototype_method_qualified_name(self):
+        src = """\
+            function Layer(path, fn) { this.path = path; this.fn = fn; }
+            Layer.prototype.handle_request = function(req, res, next) {
+              this.fn(req, res, next);
+            };
+        """
+        defs = self._parse(src)
+        qnames = {d.qualified_name for d in defs}
+        # qualified_name must be Layer.handle_request for this-resolution to work
+        assert "Layer.handle_request" in qnames
+
+    # Pattern C: exports.foo = function() {}
+    def test_exports_property(self):
+        src = """\
+            'use strict';
+            exports.decode = function decode(token) { return token.split('.')[1]; };
+            exports.verify = function verify(token, secret) { return true; };
+        """
+        defs = self._parse(src)
+        names = {d.name for d in defs}
+        assert "decode" in names
+        assert "verify" in names
+
+    # Pattern A via var chain: var proto = module.exports = { … }
+    def test_var_chain_assignment(self):
+        src = """\
+            'use strict';
+            var proto = module.exports = {
+              use: function use(fn) { this.stack.push(fn); return this; },
+              handle: function handle(req, res, done) { done(); },
+              route: function route(path) { return this; },
+            };
+        """
+        defs = self._parse(src)
+        names = {d.name for d in defs}
+        assert "use" in names
+        assert "handle" in names
+        assert "route" in names
+
+    # No regression: existing const obj = { … } pattern still works
+    def test_no_regression_const_object(self):
+        src = """\
+            const router = {
+              use: function(fn) { return this; },
+              handle: (req, res) => res.end(),
+            };
+        """
+        defs = self._parse(src)
+        qnames = {d.qualified_name for d in defs}
+        assert "router.use" in qnames
+        assert "router.handle" in qnames
+
+    # Pattern D: localVar.method = fn (module-level object, e.g. res.send = fn)
+    def test_local_object_method_assignment(self):
+        src = """\
+            var res = Object.create(require('http').ServerResponse.prototype);
+            module.exports = res;
+            res.status = function status(code) { this.statusCode = code; return this; };
+            res.send = function send(body) { this.end(body); return this; };
+        """
+        defs = self._parse(src)
+        names = {d.name for d in defs}
+        assert "status" in names
+        assert "send" in names
+
+    def test_local_object_method_qualified_name(self):
+        src = """\
+            var res = {};
+            res.send = function(body) { this.end(body); };
+        """
+        defs = self._parse(src)
+        qnames = {d.qualified_name for d in defs}
+        assert "res.send" in qnames
+
+    # const X = module.exports = { … } (const + chained assignment)
+    def test_const_chain_module_exports(self):
+        src = """\
+            const proto = module.exports = {
+              inspect() { return this.toJSON(); },
+              toJSON() { return { request: this.request }; },
+            };
+        """
+        defs = self._parse(src)
+        names = {d.name for d in defs}
+        assert "inspect" in names
+        assert "toJSON" in names
+
+    # Callgraph: module.exports = { use: fn } resolves cross-file via require
+    def test_cjs_require_resolution(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(os.path.join(tmpdir, "router.js")).write_text(textwrap.dedent("""\
+                'use strict';
+                module.exports = {
+                  use: function use(fn) { this.stack.push(fn); return this; },
+                };
+            """))
+            caller = os.path.join(tmpdir, "app.js")
+            Path(caller).write_text(textwrap.dedent("""\
+                'use strict';
+                var router = require('./router');
+                function main(fn) { router.use(fn); }
+            """))
+            idx = build_symbol_index(tmpdir)
+            edges = compute_call_edges(caller, tmpdir, idx)
+            callee_names = {e[1].split(".")[-1] for e in edges}
+            assert "use" in callee_names
