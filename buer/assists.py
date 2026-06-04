@@ -540,14 +540,6 @@ def run_inline_assists(
     channel = "agent" if winner.kind == "run_tests" else "user"
     store.enqueue_delivery(project_id, None, channel, winner.message, kind="suggestion")
 
-    # Record defines present at suggestion time (B-mechanism: only re-suggest when new defines appear)
-    if winner.kind == "commit":
-        current_names = {r["define_name"] for r in store.all_current_defines(project_id) if r["define_name"]}
-        store.update_assist_state(
-            project_id,
-            last_commit_suggest_defines=_serialize_defines(current_names),
-        )
-
 
 # ── acknowledge_commit (§4.10) ────────────────────────────────────────────────
 

@@ -466,17 +466,6 @@ class TestRunInlineAssists:
         deliveries = store.peek_deliveries(pid, channel="user")
         assert deliveries == []
 
-    def test_updates_defines_after_commit_suggestion(self, store_and_project, tmp_path):
-        """B-mechanism: after a commit suggestion fires, last_commit_suggest_defines is populated."""
-        store, pid = store_and_project
-        root = str(tmp_path)
-        affected = self._setup_stable_project(store, pid, root)
-
-        assists.run_inline_assists(store, pid, affected, root)
-
-        state = store.get_assist_state(pid)
-        assert state["last_commit_suggest_defines"] != ""
-
     def test_signals_not_cleared_by_inline_assists(self, store_and_project, tmp_path):
         """Inline assists must not affect the signal/incident channel."""
         store, pid = store_and_project
