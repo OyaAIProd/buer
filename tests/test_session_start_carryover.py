@@ -117,7 +117,8 @@ class TestPendingNoGraph:
         store = _mock_store(has_gd=False,
                             user_deliveries=[{"message": "alert"}])
         _client(store).post("/buer/session-start", json=_START)
-        store.take_user_deliveries.assert_called_once_with(1)
+        # called twice: once for alert-kind, once for suggestion-kind
+        assert store.take_user_deliveries.call_count == 2
 
     def test_no_graph_no_pending_returns_empty(self):
         store = _mock_store(has_gd=False, user_deliveries=[])
@@ -134,7 +135,7 @@ class TestDeliverOnce:
 
         call_count = 0
 
-        def take_once(_pid):
+        def take_once(_pid, kinds=None):
             nonlocal call_count
             call_count += 1
             return deliveries if call_count == 1 else []

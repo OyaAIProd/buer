@@ -224,10 +224,10 @@ def user_message(inc) -> str:
 def queue_agent_injection(store: Store, project_id: int, inc) -> None:
     """Enqueue an agent-channel delivery for this incident (§4.4)."""
     msg = agent_message(inc)
-    store.enqueue_delivery(project_id, inc["id"], "agent", msg)
+    store.enqueue_delivery(project_id, inc["id"], "agent", msg, kind="alert")
 
 
 def queue_user_notification(store: Store, project_id: int, inc) -> None:
     """Enqueue a user-channel delivery for this incident (§4.4)."""
     msg = user_message(inc)
-    store.enqueue_delivery(project_id, inc["id"], "user", msg)
+    store.enqueue_delivery(project_id, inc["id"], "user", msg, kind="alert")

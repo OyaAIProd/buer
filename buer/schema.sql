@@ -166,6 +166,7 @@ CREATE TABLE IF NOT EXISTS pending_deliveries (
     project_id  INTEGER REFERENCES projects(id),
     incident_id INTEGER REFERENCES incidents(id),
     channel     TEXT NOT NULL CHECK(channel IN ('agent', 'user')),
+    kind        TEXT NOT NULL DEFAULT 'alert' CHECK(kind IN ('alert', 'suggestion')),
     message     TEXT NOT NULL,
     created_at  TIMESTAMP,
     taken_at    TIMESTAMP          -- NULL until delivered

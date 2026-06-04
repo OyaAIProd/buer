@@ -527,7 +527,7 @@ def run_inline_assists(
     # run_tests goes to agent channel (agent is primary audience for test suggestions);
     # commit and blast_radius go to user channel.
     channel = "agent" if winner.kind == "run_tests" else "user"
-    store.enqueue_delivery(project_id, None, channel, winner.message)
+    store.enqueue_delivery(project_id, None, channel, winner.message, kind="suggestion")
 
     # Bump cooldown so commit suggestions don't repeat immediately
     if winner.kind == "commit":

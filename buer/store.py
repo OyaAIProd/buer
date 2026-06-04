@@ -55,6 +55,7 @@ class Store:
             "ALTER TABLE call_edges ADD COLUMN source_file TEXT",
             "ALTER TABLE determinations ADD COLUMN start_line INTEGER DEFAULT 0",
             "ALTER TABLE determinations ADD COLUMN end_line INTEGER DEFAULT 0",
+            "ALTER TABLE pending_deliveries ADD COLUMN kind TEXT NOT NULL DEFAULT 'alert' CHECK(kind IN ('alert', 'suggestion'))",
         ):
             try:
                 self.con.execute(stmt)
@@ -871,33 +872,50 @@ class Store:
         incident_id: Optional[int],
         channel: str,
         message: str,
+        kind: str = "alert",
     ) -> int:
-        """Enqueue one delivery message.  channel = 'agent' | 'user'.
+        """Enqueue one delivery message.  channel = 'agent'|'user'; kind = 'alert'|'suggestion'.
 
         incident_id may be None for safety-net deliveries (§2.9) that have
         no corresponding incident row.
         """
         cur = self.con.execute(
             """INSERT INTO pending_deliveries
-               (project_id, incident_id, channel, message, created_at)
-               VALUES (?, ?, ?, ?, datetime('now'))""",
-            (project_id, incident_id, channel, message),
+               (project_id, incident_id, channel, kind, message, created_at)
+               VALUES (?, ?, ?, ?, ?, datetime('now'))""",
+            (project_id, incident_id, channel, kind, message),
         )
         self.con.commit()
         return cur.lastrowid
 
-    def _take_deliveries(self, project_id: int, channel: str) -> list[sqlite3.Row]:
+    def _take_deliveries(
+        self,
+        project_id: int,
+        channel: str,
+        kinds: Optional[tuple] = None,
+    ) -> list[sqlite3.Row]:
         """Take (mark as delivered) all untaken deliveries for channel.
 
+        kinds: if provided, only take rows whose kind is in the tuple.
         Atomic: fetch then bulk-update taken_at in one transaction.
         Returns the rows as they were before marking.
         """
-        rows = self.con.execute(
-            """SELECT * FROM pending_deliveries
-               WHERE project_id = ? AND channel = ? AND taken_at IS NULL
-               ORDER BY id""",
-            (project_id, channel),
-        ).fetchall()
+        if kinds:
+            placeholders_k = ",".join("?" * len(kinds))
+            rows = self.con.execute(
+                f"""SELECT * FROM pending_deliveries
+                   WHERE project_id = ? AND channel = ? AND kind IN ({placeholders_k})
+                     AND taken_at IS NULL
+                   ORDER BY id""",
+                (project_id, channel, *kinds),
+            ).fetchall()
+        else:
+            rows = self.con.execute(
+                """SELECT * FROM pending_deliveries
+                   WHERE project_id = ? AND channel = ? AND taken_at IS NULL
+                   ORDER BY id""",
+                (project_id, channel),
+            ).fetchall()
         if rows:
             ids = tuple(r["id"] for r in rows)
             placeholders = ",".join("?" * len(ids))
@@ -914,9 +932,14 @@ class Store:
         """Take all untaken agent-channel deliveries (marks them delivered)."""
         return self._take_deliveries(project_id, "agent")
 
-    def take_user_deliveries(self, project_id: int) -> list[sqlite3.Row]:
-        """Take all untaken user-channel deliveries (marks them delivered)."""
-        return self._take_deliveries(project_id, "user")
+    def take_user_deliveries(
+        self, project_id: int, kinds: Optional[tuple] = None
+    ) -> list[sqlite3.Row]:
+        """Take all untaken user-channel deliveries (marks them delivered).
+
+        kinds: optional filter, e.g. ('alert',) to take only alerts.
+        """
+        return self._take_deliveries(project_id, "user", kinds=kinds)
 
     def peek_deliveries(
         self, project_id: int, channel: Optional[str] = None

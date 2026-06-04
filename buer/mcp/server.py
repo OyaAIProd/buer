@@ -886,27 +886,36 @@ async def session_start_handler(request: Request) -> Response:
             pass
 
     # Carry-over delivery: if Stop hook didn't fire last session (abnormal exit),
-    # pending user-channel alerts would otherwise be lost.  Drain them here so they
-    # surface at the start of the new session.  take() is destructive — delivered once.
-    _pending = store.take_user_deliveries(pid)
-    if _pending:
+    # pending user-channel deliveries surface here.  take() is destructive — delivered once.
+    # alert-kind: were not blocked last session (abnormal exit) — prepend as urgent carry-over.
+    # suggestion-kind: commit/blast hints — not urgent, append softly after overview.
+    _pending_alerts = store.take_user_deliveries(pid, kinds=("alert",))
+    _pending_suggestions = store.take_user_deliveries(pid, kinds=("suggestion",))
+    if _pending_alerts:
         alert_prefix = (
             "[BUER] 上一轮结束时有未处理的检测告警，现在补送：\n\n"
-            + "\n\n".join(d["message"] for d in _pending)
+            + "\n\n".join(d["message"] for d in _pending_alerts)
             + "\n\n"
         )
     else:
         alert_prefix = ""
+    if _pending_suggestions:
+        suggestion_suffix = (
+            "\n\n[BUER] 上一轮遗留建议：\n\n"
+            + "\n\n".join(d["message"] for d in _pending_suggestions)
+        )
+    else:
+        suggestion_suffix = ""
 
     triggered = _maybe_trigger_full_ingest(store, pid, cwd)
     if not store.has_gd_edges(pid):
         if triggered:
             return Response(
-                content=alert_prefix + "buer: completing project structure coverage in the background; influence analysis will be more complete shortly.",
+                content=alert_prefix + "buer: completing project structure coverage in the background; influence analysis will be more complete shortly." + suggestion_suffix,
                 media_type="text/plain",
                 status_code=200,
             )
-        return Response(content=alert_prefix, media_type="text/plain", status_code=200)
+        return Response(content=alert_prefix + suggestion_suffix, media_type="text/plain", status_code=200)
 
     overview = health.project_overview(store, pid, cwd)
     coarse_map = health.coarse_structure_map(store, pid, cwd)
@@ -919,7 +928,7 @@ async def session_start_handler(request: Request) -> Response:
     teaser = build_teaser(store, pid)
     if teaser:
         content = content + "\n" + teaser if content else teaser
-    return Response(content=alert_prefix + content, media_type="text/plain", status_code=200)
+    return Response(content=alert_prefix + content + suggestion_suffix, media_type="text/plain", status_code=200)
 
 
 def _scan_boundary_files(root: str) -> list[str]:
@@ -1101,8 +1110,9 @@ async def stop_handler(request: Request) -> Response:
             daemon=True,
         ).start()
 
-    # (b) Block stop and inject pending user-level alerts into agent context.
-    deliveries = store.take_user_deliveries(pid)
+    # (b) Block stop on alert-kind deliveries only.
+    # suggestion-kind (commit/blast hints) stay in queue for SessionStart — never block.
+    deliveries = store.take_user_deliveries(pid, kinds=("alert",))
     if not deliveries:
         return _ALLOW
 
