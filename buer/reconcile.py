@@ -204,13 +204,13 @@ def reconcile(
 
         # Step 3 + 4: new or changed defines
         for define in current_defines:
-            coarse, fine = parse.compute_fingerprint(define)
-            rec_coarse, rec_fine, old_det_id = recorded.get(
-                define.qualified_name, (None, None, None)
+            coarse, fine = parse.compute_fingerprint(define)  # still computed; stored for define_loop/find_duplicates
+            rec_coarse, rec_fine, old_det_id, rec_content_hash = recorded.get(
+                define.qualified_name, (None, None, None, None)
             )
 
-            if coarse == rec_coarse and fine == rec_fine:
-                continue  # unchanged — no new determination
+            if define.content_hash == rec_content_hash:
+                continue  # unchanged — content identical (precise change detection)
 
             # edit_type auto-derived (§4.6): "create" if never recorded, "modify" if changed
             edit_type = "create" if define.qualified_name not in recorded else "modify"
@@ -231,6 +231,7 @@ def reconcile(
                 file_mtime=_file_mtime,
                 start_line=define.start_line,
                 end_line=define.end_line,
+                content_hash=define.content_hash,
             )
 
             # Equivalence class: uses fine fingerprint so receiver-distinguished defines
