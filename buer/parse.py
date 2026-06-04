@@ -135,6 +135,7 @@ class Define:
     name_bindings: tuple = ()    # ((receiver_name, type_name), ...) unified; lang-agnostic
     start_line: int = 0          # 1-based source start line (0 = unknown)
     end_line: int = 0            # 1-based source end line, inclusive (0 = unknown)
+    content_hash: str = ""       # body content hash for change detection (decoupled from coarse/fine)
 
 
 # ── shared tree-sitter helpers ────────────────────────────────────────────────
@@ -932,6 +933,8 @@ def _extract_function(
         skip_first=skip_first,
     )
 
+    content_hash = _content_hash(body_node)
+
     return Define(
         name=name,
         qualified_name=qualified_name,
@@ -951,6 +954,7 @@ def _extract_function(
         name_bindings=name_bindings,
         start_line=fn_node.start_point[0] + 1,
         end_line=fn_node.end_point[0] + 1,
+        content_hash=content_hash,
     )
 
 
@@ -1573,6 +1577,7 @@ def _extract_js_callable(
 
     is_async = _js_is_async(fn_node)
     name_bindings = _collect_js_name_bindings(fn_node, class_field_types, file_return_types)
+    content_hash = _content_hash(body_node)
 
     return Define(
         name=name,
@@ -1589,6 +1594,7 @@ def _extract_js_callable(
         name_bindings=name_bindings,
         start_line=fn_node.start_point[0] + 1,
         end_line=fn_node.end_point[0] + 1,
+        content_hash=content_hash,
     )
 
 
@@ -1865,6 +1871,7 @@ def _collect_js_defines(
                     name=cname, qualified_name=prefix, file_path=file_path,
                     params_shape=(0, 0, False, False, 0), returns_kind="unknown",
                     calls=(), imports=(), side_effects=frozenset(), size_count=0,
+                    content_hash=_content_hash(None),
                 ))
             body = _child_of_type(c, "class_body")
             if body:
@@ -2013,6 +2020,36 @@ def _fine_call(c: str) -> str:
     if parts[0] in ("self", "cls", "this") and len(parts) > 1:
         parts = parts[1:]
     return ".".join(parts)
+
+
+def _body_text_no_comments(node) -> str:
+    """Concatenate node's leaf text in order, skipping comment nodes."""
+    parts = []
+    def walk(n):
+        if n.type == "comment":
+            return
+        if not n.children:
+            parts.append(n.text.decode("utf-8", "replace"))
+            return
+        for c in n.children:
+            walk(c)
+    walk(node)
+    return " ".join(parts)
+
+
+def _content_hash(body_node) -> str:
+    """Precise body-content hash for change detection (decoupled from coarse/fine).
+
+    Normalizes away non-logic differences (comments, whitespace, blank lines)
+    but preserves statement content and order. Any logic/control-flow change
+    flips the hash; pure formatting/comment edits do not.
+    """
+    if body_node is None:
+        return hashlib.sha256(b"").hexdigest()[:16]
+    text = _body_text_no_comments(body_node)
+    lines = [ln.strip() for ln in text.splitlines()]
+    norm = "\n".join(ln for ln in lines if ln)
+    return hashlib.sha256(norm.encode()).hexdigest()[:16]
 
 
 def compute_fingerprint(define: Define) -> tuple[str, str]:
