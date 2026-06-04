@@ -1,7 +1,8 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.zengxzh/buer",
-  "description": "Guardrail for AI coding agents: catches loops, regressions, and test-tampering.",
+  "description": "Guardrail for AI coding agents: loops, regressions, test-tampering. Monitoring needs HTTP + hooks.",
+  "websiteUrl": "https://github.com/zengxzh/buer/blob/main/docs/SETUP.md",
   "repository": {
     "url": "https://github.com/zengxzh/buer",
     "source": "github"
