@@ -24,6 +24,11 @@ from buer.mcp.server import _set_store_for_testing, mcp
 from buer.store import Store
 
 
+def _ac(r) -> str:
+    """Extract additionalContext from hook JSON, or '' when body is {}."""
+    return r.json().get("hookSpecificOutput", {}).get("additionalContext", "")
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _mock_store(
@@ -64,26 +69,26 @@ class TestPendingWithGraph:
         with _OVERVIEW_PATCH[0], _OVERVIEW_PATCH[1]:
             r = _client(store).post("/buer/session-start", json=_START)
         assert r.status_code == 200
-        assert r.text.startswith("[BUER] 上一轮结束时有未处理的检测告警")
+        assert _ac(r).startswith("[BUER] 上一轮结束时有未处理的检测告警")
 
     def test_overview_still_present_after_prefix(self):
         store = _mock_store(user_deliveries=[{"message": "some alert"}])
         with _OVERVIEW_PATCH[0], _OVERVIEW_PATCH[1]:
             r = _client(store).post("/buer/session-start", json=_START)
-        assert "[BUER] overview" in r.text
+        assert "[BUER] overview" in _ac(r)
 
     def test_message_in_prefix(self):
         msg = "regression: fn broke test_fn"
         store = _mock_store(user_deliveries=[{"message": msg}])
         with _OVERVIEW_PATCH[0], _OVERVIEW_PATCH[1]:
             r = _client(store).post("/buer/session-start", json=_START)
-        assert msg in r.text
+        assert msg in _ac(r)
 
     def test_prefix_clarifies_not_user_rejection(self):
         store = _mock_store(user_deliveries=[{"message": "alert"}])
         with _OVERVIEW_PATCH[0], _OVERVIEW_PATCH[1]:
             r = _client(store).post("/buer/session-start", json=_START)
-        assert "补送" in r.text  # carry-over framing, not block framing
+        assert "补送" in _ac(r)  # carry-over framing, not block framing
 
 
 # ── 2. no pending → backward compatible, no prefix ───────────────────────────
@@ -93,14 +98,14 @@ class TestNoPendingBackwardCompat:
         store = _mock_store(user_deliveries=[])
         with _OVERVIEW_PATCH[0], _OVERVIEW_PATCH[1]:
             r = _client(store).post("/buer/session-start", json=_START)
-        assert not r.text.startswith("[BUER] 上一轮")
-        assert "[BUER] overview" in r.text
+        assert not _ac(r).startswith("[BUER] 上一轮")
+        assert "[BUER] overview" in _ac(r)
 
     def test_text_equals_overview_exactly(self):
         store = _mock_store(user_deliveries=[])
         with _OVERVIEW_PATCH[0], _OVERVIEW_PATCH[1]:
             r = _client(store).post("/buer/session-start", json=_START)
-        assert r.text == "[BUER] overview"
+        assert _ac(r) == "[BUER] overview"
 
 
 # ── 3. no gd_edges + pending → prefix + placeholder; queue cleared ────────────
@@ -110,8 +115,8 @@ class TestPendingNoGraph:
         store = _mock_store(has_gd=False,
                             user_deliveries=[{"message": "stuck_region: fn looping"}])
         r = _client(store).post("/buer/session-start", json=_START)
-        assert "[BUER] 上一轮结束时有未处理的检测告警" in r.text
-        assert "stuck_region: fn looping" in r.text
+        assert "[BUER] 上一轮结束时有未处理的检测告警" in _ac(r)
+        assert "stuck_region: fn looping" in _ac(r)
 
     def test_take_called_even_without_graph(self):
         store = _mock_store(has_gd=False,
@@ -123,7 +128,7 @@ class TestPendingNoGraph:
     def test_no_graph_no_pending_returns_empty(self):
         store = _mock_store(has_gd=False, user_deliveries=[])
         r = _client(store).post("/buer/session-start", json=_START)
-        assert r.text == ""
+        assert _ac(r) == ""
 
 
 # ── 4. deliver-once: second SessionStart sees no prefix ───────────────────────
@@ -147,8 +152,8 @@ class TestDeliverOnce:
             r1 = _client(store).post("/buer/session-start", json=_START)
             r2 = _client(store).post("/buer/session-start", json=_START)
 
-        assert "上一轮结束时有未处理" in r1.text
-        assert "上一轮结束时有未处理" not in r2.text
+        assert "上一轮结束时有未处理" in _ac(r1)
+        assert "上一轮结束时有未处理" not in _ac(r2)
 
 
 # ── 5. integrity alert (test_tampering) correctly forwarded ──────────────────
@@ -162,16 +167,16 @@ class TestIntegrityAlertForwarded:
         store = _mock_store(user_deliveries=[{"message": msg}])
         with _OVERVIEW_PATCH[0], _OVERVIEW_PATCH[1]:
             r = _client(store).post("/buer/session-start", json=_START)
-        assert "test_tampering" in r.text
-        assert "test_login" in r.text
+        assert "test_tampering" in _ac(r)
+        assert "test_login" in _ac(r)
 
     def test_tampering_alert_precedes_overview(self):
         msg = "test_tampering: suspicious"
         store = _mock_store(user_deliveries=[{"message": msg}])
         with _OVERVIEW_PATCH[0], _OVERVIEW_PATCH[1]:
             r = _client(store).post("/buer/session-start", json=_START)
-        prefix_pos = r.text.index("上一轮结束时")
-        overview_pos = r.text.index("[BUER] overview")
+        prefix_pos = _ac(r).index("上一轮结束时")
+        overview_pos = _ac(r).index("[BUER] overview")
         assert prefix_pos < overview_pos
 
 
@@ -186,9 +191,9 @@ class TestMultipleMessages:
         ])
         with _OVERVIEW_PATCH[0], _OVERVIEW_PATCH[1]:
             r = _client(store).post("/buer/session-start", json=_START)
-        assert "alert A" in r.text
-        assert "alert B" in r.text
-        assert "alert C" in r.text
+        assert "alert A" in _ac(r)
+        assert "alert B" in _ac(r)
+        assert "alert C" in _ac(r)
 
     def test_messages_separated_by_double_newline(self):
         store = _mock_store(user_deliveries=[
@@ -197,7 +202,7 @@ class TestMultipleMessages:
         ])
         with _OVERVIEW_PATCH[0], _OVERVIEW_PATCH[1]:
             r = _client(store).post("/buer/session-start", json=_START)
-        assert "X\n\nY" in r.text
+        assert "X\n\nY" in _ac(r)
 
 
 # ── 7. no pid → take not called ──────────────────────────────────────────────

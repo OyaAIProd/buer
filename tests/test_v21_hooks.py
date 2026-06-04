@@ -23,6 +23,11 @@ from buer.mcp.server import _set_store_for_testing, mcp
 from buer.store import Store
 
 
+def _ac(r) -> str:
+    """Extract additionalContext from hook JSON, or '' when body is {}."""
+    return r.json().get("hookSpecificOutput", {}).get("additionalContext", "")
+
+
 # ── helpers ────────────────────────────────────────────────────────────────────
 
 def _mock_store(
@@ -65,7 +70,7 @@ class TestPostRead:
             "cwd": "/proj",
         })
         assert r.status_code == 200
-        assert r.text == ""
+        assert _ac(r) == ""
         store.enqueue_recompute.assert_called_once_with(1, "/proj/src/foo.py")
 
     def test_no_project_silent(self):
@@ -135,7 +140,7 @@ class TestPostReadGrepGlob:
             "cwd": "/proj",
         })
         assert r.status_code == 200
-        assert r.text == ""
+        assert _ac(r) == ""
         store.enqueue_recompute.assert_called_once_with(1, "/proj")
 
     def test_glob_no_file_path_enqueues_cwd(self):
@@ -281,7 +286,7 @@ class TestSessionStartWithGraph:
                 "cwd": "/proj",
             })
         assert r.status_code == 200
-        assert "overview text" in r.text
+        assert "overview text" in _ac(r)
 
     def test_project_overview_called_with_correct_args(self):
         store = _mock_store(pid=7, has_gd=True)
@@ -304,7 +309,7 @@ class TestSessionStartNoGraph:
             "cwd": "/proj",
         })
         assert r.status_code == 200
-        assert r.text == ""
+        assert _ac(r) == ""
 
     def test_no_overview_call_when_no_graph(self):
         store = _mock_store(has_gd=False)
@@ -322,13 +327,13 @@ class TestSessionStartNoGraph:
             "cwd": "/unknown",
         })
         assert r.status_code == 200
-        assert r.text == ""
+        assert _ac(r) == ""
 
     def test_missing_cwd_empty(self):
         store = _mock_store()
         r = _client(store).post("/buer/session-start", json={"source": "startup"})
         assert r.status_code == 200
-        assert r.text == ""
+        assert _ac(r) == ""
 
 
 # ── G: session-start source=resume executes normally ─────────────────────────
@@ -343,7 +348,7 @@ class TestSessionStartResume:
                 "cwd": "/proj",
             })
         assert r.status_code == 200
-        assert "refreshed" in r.text
+        assert "refreshed" in _ac(r)
 
     def test_resume_no_graph_still_empty(self):
         store = _mock_store(has_gd=False)
@@ -351,7 +356,7 @@ class TestSessionStartResume:
             "source": "resume",
             "cwd": "/proj",
         })
-        assert r.text == ""
+        assert _ac(r) == ""
 
 
 # ── H: post-edit still injects alerts + enqueues ─────────────────────────────
@@ -388,7 +393,7 @@ class TestPostEditEnqueues:
                 "tool_input": {"file_path": file_path},
                 "cwd": str(tmp_path),
             })
-        assert "agent alert" in r.text
+        assert "agent alert" in _ac(r)
 
 
 # ── I: pending_recompute dedup (Store unit tests) ─────────────────────────────
@@ -456,7 +461,7 @@ class TestSilentFailures:
             "/buer/post-read", content=b"!!!", headers={"Content-Type": "application/json"}
         )
         assert r.status_code == 200
-        assert r.text == ""
+        assert _ac(r) == ""
 
     def test_post_read_empty_json(self):
         store = _mock_store()
@@ -470,7 +475,7 @@ class TestSilentFailures:
             "/buer/session-start", content=b"!!!", headers={"Content-Type": "application/json"}
         )
         assert r.status_code == 200
-        assert r.text == ""
+        assert _ac(r) == ""
 
     def test_stop_invalid_json(self):
         store = _mock_store()

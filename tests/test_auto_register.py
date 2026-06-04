@@ -19,6 +19,11 @@ from buer.mcp.server import _set_store_for_testing, mcp, project_overview
 from buer.store import Store
 
 
+def _ac(r) -> str:
+    """Extract additionalContext from hook JSON, or '' when body is {}."""
+    return r.json().get("hookSpecificOutput", {}).get("additionalContext", "")
+
+
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
@@ -99,7 +104,7 @@ class TestNoAutoRegisterWithoutCwd:
             "tool_input": {"file_path": "/no/cwd/given.py"},
         })
         assert resp.status_code == 200
-        assert resp.text == ""
+        assert _ac(resp) == ""
         rows = fresh_store.con.execute("SELECT COUNT(*) AS n FROM projects").fetchone()
         assert rows["n"] == 0
 
@@ -215,7 +220,7 @@ class TestAutoRegisterOnRead:
             "session_id": "sess-3",
         })
         assert resp.status_code == 200
-        assert resp.text == ""
+        assert _ac(resp) == ""
         rows = fresh_store.con.execute("SELECT COUNT(*) AS n FROM projects").fetchone()
         assert rows["n"] == 0
 
@@ -246,7 +251,7 @@ class TestSessionStartNoAutoRegister:
             "session_id": "sess-start-1",
         })
         assert resp.status_code == 200
-        assert resp.text == ""
+        assert _ac(resp) == ""
         rows = fresh_store.con.execute("SELECT COUNT(*) AS n FROM projects").fetchone()
         assert rows["n"] == 0
 

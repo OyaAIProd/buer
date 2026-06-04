@@ -23,6 +23,12 @@ from buer import metrics
 from buer.health import _MAX_COMPONENTS_SHOWN, coarse_structure_map
 from buer.metrics import connected_components_all
 from buer.mcp.server import mcp, _set_store_for_testing
+
+
+def _ac(r) -> str:
+    """Extract additionalContext from hook JSON, or '' when body is {}."""
+    return r.json().get("hookSpecificOutput", {}).get("additionalContext", "")
+
 from buer.store import Store
 
 
@@ -218,7 +224,7 @@ class TestSessionStartEndpoint:
         client = self._client(store)
         resp = client.post("/buer/session-start", json={"cwd": root})
         assert resp.status_code == 200
-        body = resp.text
+        body = _ac(resp)
         assert "codebase structure overview" in body
 
     def test_without_gd_edges_returns_empty(self, tmp_path):
@@ -229,7 +235,7 @@ class TestSessionStartEndpoint:
         client = self._client(store)
         resp = client.post("/buer/session-start", json={"cwd": root})
         assert resp.status_code == 200
-        assert resp.text == ""
+        assert _ac(resp) == ""
 
     def test_overview_present_in_response(self, tmp_path):
         store, pid, root = _make_store(tmp_path)
@@ -237,7 +243,7 @@ class TestSessionStartEndpoint:
         ids = _chain(store, pid, fp, 2, seq_start=1)
         client = self._client(store)
         resp = client.post("/buer/session-start", json={"cwd": root})
-        assert "project overview" in resp.text
+        assert "project overview" in _ac(resp)
 
 
 # ── F: dynamic language disclaimer ───────────────────────────────────────────

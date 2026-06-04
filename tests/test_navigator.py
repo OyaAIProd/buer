@@ -31,6 +31,11 @@ from buer.navigator import (
 from buer.store import Store
 
 
+def _ac(r) -> str:
+    """Extract additionalContext from hook JSON, or '' when body is {}."""
+    return r.json().get("hookSpecificOutput", {}).get("additionalContext", "")
+
+
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
@@ -138,7 +143,7 @@ class TestFormCBelowThreshold:
             "cwd": root,
             "session_id": "sess-001",
         })
-        assert resp.text == ""
+        assert _ac(resp) == ""
 
     def test_post_read_silent_when_no_gd_edges(self, tmp_path):
         store, pid, root = _make_store(tmp_path)
@@ -153,7 +158,7 @@ class TestFormCBelowThreshold:
             "cwd": root,
             "session_id": "sess-002",
         })
-        assert resp.text == ""
+        assert _ac(resp) == ""
 
 
 # ── C: form C — above threshold + not given → injects hint ───────────────────
@@ -179,7 +184,7 @@ class TestFormCInjectsHint:
             "session_id": "sess-003",
         })
         assert resp.status_code == 200
-        assert resp.text != ""
+        assert _ac(resp) != ""
 
     def test_hint_contains_hub_nodes(self, tmp_path):
         store, pid, root, fp = self._setup_clear_graph(tmp_path)
@@ -190,7 +195,7 @@ class TestFormCInjectsHint:
             "cwd": root,
             "session_id": "sess-004",
         })
-        assert "fn_1" in resp.text  # the hub
+        assert "fn_1" in _ac(resp)  # the hub
 
     def test_hint_mentions_structural_observation(self, tmp_path):
         store, pid, root, fp = self._setup_clear_graph(tmp_path)
@@ -201,7 +206,7 @@ class TestFormCInjectsHint:
             "cwd": root,
             "session_id": "sess-005",
         })
-        assert "BUER structural observation" in resp.text
+        assert "BUER structural observation" in _ac(resp)
 
 
 # ── D: dedup — already given → subsequent post-read returns "" ───────────────
@@ -223,8 +228,8 @@ class TestFormCDedup:
         }
         first = client.post("/buer/post-read", json=payload)
         second = client.post("/buer/post-read", json=payload)
-        assert first.text != ""    # first: hint injected
-        assert second.text == ""   # second: deduped
+        assert _ac(first) != ""    # first: hint injected
+        assert _ac(second) == ""   # second: deduped
 
     def test_different_session_id_gets_fresh_hint(self, tmp_path):
         store, pid, root = _make_store(tmp_path)
@@ -241,8 +246,8 @@ class TestFormCDedup:
             "tool_name": "Read", "tool_input": {"file_path": fp},
             "cwd": root, "session_id": "sess-B",
         })
-        assert r1.text != ""
-        assert r2.text != ""  # different session → fresh hint
+        assert _ac(r1) != ""
+        assert _ac(r2) != ""  # different session → fresh hint
 
 
 # ── E: post-read does not call reconcile ────────────────────────────────────

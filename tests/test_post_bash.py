@@ -21,6 +21,12 @@ from starlette.testclient import TestClient
 from buer.mcp.server import _set_store_for_testing, mcp
 from buer.store import Store
 
+
+def _ac(r) -> str:
+    """Extract additionalContext from hook JSON, or '' when body is {}."""
+    return r.json().get("hookSpecificOutput", {}).get("additionalContext", "")
+
+
 # ── sample outputs ─────────────────────────────────────────────────────────────
 
 _PYTEST_OUT = (
@@ -100,7 +106,7 @@ class TestNonTestCommands:
             "cwd": "/proj",
         })
         assert r.status_code == 200
-        assert r.text == ""
+        assert _ac(r) == ""
         store.insert_test_run.assert_not_called()
 
     def test_git_commit_skipped(self):
@@ -208,7 +214,7 @@ class TestHappyPathPytest:
             "cwd": "/proj",
         })
         assert r.status_code == 200
-        assert r.text == ""
+        assert _ac(r) == ""
         store.insert_test_run.assert_called_once()
         kw = _insert_kwargs(store)
         assert kw["source"] == "stdout"
@@ -393,7 +399,7 @@ class TestResponseAlwaysEmpty:
             "tool_response": _PYTEST_OUT,
             "cwd": "/proj",
         })
-        assert r.text == ""
+        assert _ac(r) == ""
 
     def test_no_text_on_non_test_command(self):
         store = _mock_store()
@@ -401,7 +407,7 @@ class TestResponseAlwaysEmpty:
             "tool_input": {"command": "ls"},
             "cwd": "/proj",
         })
-        assert r.text == ""
+        assert _ac(r) == ""
 
 
 # ── J: real Claude Code payload format (dict tool_response) ──────────────────
@@ -474,7 +480,7 @@ class TestDictToolResponse:
         assert r.status_code == 200
         # insert_crash_stack may or may not be called depending on FQN resolution;
         # key assertion: no exception, response is empty.
-        assert r.text == ""
+        assert _ac(r) == ""
 
     def test_response_always_empty_for_dict_format(self):
         store = _mock_store()
@@ -484,7 +490,7 @@ class TestDictToolResponse:
             "tool_response": {"stdout": _PYTEST_OUT, "stderr": ""},
             "cwd": "/proj",
         })
-        assert r.text == ""
+        assert _ac(r) == ""
 
 
 # ── K: crash stack detection via real Store ───────────────────────────────────
@@ -613,8 +619,8 @@ class TestCrashInjection:
         try:
             r = self._post_crash(s, tmp_path, "changed_fn", afile)
             assert r.status_code == 200
-            assert "top crash suspect" in r.text
-            assert "a.changed_fn" in r.text
+            assert "top crash suspect" in _ac(r)
+            assert "a.changed_fn" in _ac(r)
         finally:
             s.close()
 
@@ -628,9 +634,9 @@ class TestCrashInjection:
         try:
             r = self._post_crash(s, tmp_path, "getPool", str(lib_db))
             assert r.status_code == 200
-            assert "⚡" in r.text
-            assert "crash-path suspects" in r.text
-            assert "lib/db.getPool" in r.text
+            assert "⚡" in _ac(r)
+            assert "crash-path suspects" in _ac(r)
+            assert "lib/db.getPool" in _ac(r)
         finally:
             s.close()
 
@@ -644,7 +650,7 @@ class TestCrashInjection:
         try:
             r = self._post_crash(s, tmp_path, "unrelatedFn", str(unrelated))
             assert r.status_code == 200
-            assert "crash stack does not directly intersect" in r.text
+            assert "crash stack does not directly intersect" in _ac(r)
         finally:
             s.close()
 
@@ -657,7 +663,7 @@ class TestCrashInjection:
         try:
             r = self._post_crash(s, tmp_path, "doThing", str(crash_file))
             assert r.status_code == 200
-            assert r.text == ""
+            assert _ac(r) == ""
         finally:
             s.close()
 
@@ -684,7 +690,7 @@ class TestCrashInjection:
             r1 = client.post("/buer/post-bash", json=payload)
             r2 = client.post("/buer/post-bash", json=payload)
             assert "⚡" in r1.text
-            assert r2.text == ""
+            assert _ac(r2) == ""
         finally:
             s.close()
 
@@ -703,7 +709,7 @@ class TestCrashInjection:
             ):
                 r = self._post_crash(s, tmp_path, "getPool", str(crash_file))
             assert r.status_code == 200
-            assert r.text == ""
+            assert _ac(r) == ""
             rows = s.recent_crash_stacks(pid)
             assert len(rows) >= 1
         finally:
@@ -748,9 +754,9 @@ class TestCrashInjection:
                 "cwd": str(tmp_path),
             })
             assert r.status_code == 200
-            assert "top crash suspect" in r.text
-            assert "... and 2 more" in r.text
-            numbered = [l for l in r.text.split("\n") if l.strip() and l.strip()[0].isdigit()]
+            assert "top crash suspect" in _ac(r)
+            assert "... and 2 more" in _ac(r)
+            numbered = [l for l in _ac(r).split("\n") if l.strip() and l.strip()[0].isdigit()]
             assert len(numbered) == 12
         finally:
             s.close()

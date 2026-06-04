@@ -666,6 +666,17 @@ def diff_snapshots(project_root: str, commit_a: str, commit_b: str) -> str:
     return "\n".join(lines)
 
 
+def _hook_json(event: str, text: str) -> Response:
+    """Claude Code http-hook 合规响应。
+    空 text → {}(无操作/无注入);非空 → hookSpecificOutput.additionalContext。
+    event 取 'PostToolUse' 或 'SessionStart'。"""
+    if not text:
+        return Response("{}", media_type="application/json", status_code=200)
+    payload = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
+    return Response(json.dumps(payload, ensure_ascii=False),
+                    media_type="application/json", status_code=200)
+
+
 # ── Hook endpoint ─────────────────────────────────────────────────────────────
 
 @mcp.custom_route("/buer/post-edit", methods=["POST"])
@@ -697,14 +708,14 @@ async def post_edit_handler(request: Request) -> Response:
     try:
         body = await request.json()
     except Exception:
-        return Response(content="", media_type="text/plain", status_code=200)
+        return _hook_json("PostToolUse", "")
 
     tool_input = body.get("tool_input") or {}
     file_path = tool_input.get("file_path", "")
     cwd = body.get("cwd", "")
 
     if not file_path:
-        return Response(content="", media_type="text/plain", status_code=200)
+        return _hook_json("PostToolUse", "")
 
     store = _get_store()
 
@@ -715,7 +726,7 @@ async def post_edit_handler(request: Request) -> Response:
     if pid is None and cwd:
         pid = store.get_or_create_project(cwd)
     if pid is None:
-        return Response(content="", media_type="text/plain", status_code=200)
+        return _hook_json("PostToolUse", "")
 
     project = store.get_project(pid)
     root = project["root_path"] if project else cwd
@@ -748,11 +759,8 @@ async def post_edit_handler(request: Request) -> Response:
     )
 
     parts = [d["message"] for d in deliveries] + hi_warnings
-    if not parts:
-        return Response(content="", media_type="text/plain", status_code=200)
-
-    text = "\n\n".join(parts)
-    return Response(content=text, media_type="text/plain", status_code=200)
+    text = "\n\n".join(parts) if parts else ""
+    return _hook_json("PostToolUse", text)
 
 
 @mcp.custom_route("/buer/post-read", methods=["POST"])
@@ -783,7 +791,7 @@ async def post_read_handler(request: Request) -> Response:
     try:
         body = await request.json()
     except Exception:
-        return Response(content="", media_type="text/plain", status_code=200)
+        return _hook_json("PostToolUse", "")
 
     tool_input = body.get("tool_input") or {}
     file_path = tool_input.get("file_path", "")
@@ -816,9 +824,9 @@ async def post_read_handler(request: Request) -> Response:
                 hint = navigator.structure_guide_hint(store, pid)
                 if hint:
                     _structure_guide_given.add(guide_key)
-                    return Response(content=hint, media_type="text/plain", status_code=200)
+                    return _hook_json("PostToolUse", hint)
 
-    return Response(content="", media_type="text/plain", status_code=200)
+    return _hook_json("PostToolUse", "")
 
 
 @mcp.custom_route("/buer/session-start", methods=["POST"])
@@ -839,12 +847,12 @@ async def session_start_handler(request: Request) -> Response:
     try:
         body = await request.json()
     except Exception:
-        return Response(content="", media_type="text/plain", status_code=200)
+        return _hook_json("SessionStart", "")
 
     cwd = body.get("cwd", "")
     session_id = body.get("session_id", "")
     if not cwd:
-        return Response(content="", media_type="text/plain", status_code=200)
+        return _hook_json("SessionStart", "")
 
     store = _get_store()
     # Git-aware project resolution + missed-event fallback (git integration batch 4)
@@ -874,7 +882,7 @@ async def session_start_handler(request: Request) -> Response:
         pid = store.find_project_for_file(cwd)
 
     if pid is None:
-        return Response(content="", media_type="text/plain", status_code=200)
+        return _hook_json("SessionStart", "")
 
     _check_gitignore_protection(project_root, store, pid)
 
@@ -910,12 +918,8 @@ async def session_start_handler(request: Request) -> Response:
     triggered = _maybe_trigger_full_ingest(store, pid, cwd)
     if not store.has_gd_edges(pid):
         if triggered:
-            return Response(
-                content=alert_prefix + "buer: completing project structure coverage in the background; influence analysis will be more complete shortly." + suggestion_suffix,
-                media_type="text/plain",
-                status_code=200,
-            )
-        return Response(content=alert_prefix + suggestion_suffix, media_type="text/plain", status_code=200)
+            return _hook_json("SessionStart", alert_prefix + "buer: completing project structure coverage in the background; influence analysis will be more complete shortly." + suggestion_suffix)
+        return _hook_json("SessionStart", alert_prefix + suggestion_suffix)
 
     overview = health.project_overview(store, pid, cwd)
     coarse_map = health.coarse_structure_map(store, pid, cwd)
@@ -928,7 +932,7 @@ async def session_start_handler(request: Request) -> Response:
     teaser = build_teaser(store, pid)
     if teaser:
         content = content + "\n" + teaser if content else teaser
-    return Response(content=alert_prefix + content + suggestion_suffix, media_type="text/plain", status_code=200)
+    return _hook_json("SessionStart", alert_prefix + content + suggestion_suffix)
 
 
 def _scan_boundary_files(root: str) -> list[str]:
@@ -1454,7 +1458,7 @@ async def post_bash_handler(request: Request) -> Response:
     try:
         body = await request.json()
     except Exception:
-        return Response(content="", media_type="text/plain", status_code=200)
+        return _hook_json("PostToolUse", "")
 
     tool_input = body.get("tool_input") or {}
     command = tool_input.get("command", "")
@@ -1466,12 +1470,12 @@ async def post_bash_handler(request: Request) -> Response:
     output = str(output) if output else ""
 
     if not output:
-        return Response(content="", media_type="text/plain", status_code=200)
+        return _hook_json("PostToolUse", "")
 
     store = _get_store()
     pid = store.find_project_for_file(cwd) if cwd else None
     if pid is None:
-        return Response(content="", media_type="text/plain", status_code=200)
+        return _hook_json("PostToolUse", "")
 
     inject_text = ""
 
@@ -1548,7 +1552,7 @@ async def post_bash_handler(request: Request) -> Response:
         except Exception:
             pass  # batch 3 failure must not affect post_bash main flow
 
-    return Response(content=inject_text, media_type="text/plain", status_code=200)
+    return _hook_json("PostToolUse", inject_text)
 
 
 # ── OTLP metrics receiver ─────────────────────────────────────────────────────

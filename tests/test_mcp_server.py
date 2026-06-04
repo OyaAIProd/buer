@@ -21,6 +21,11 @@ from buer.store import Store
 from buer.mcp.server import mcp, _set_store_for_testing
 
 
+def _ac(r) -> str:
+    """Extract additionalContext from hook JSON, or '' when body is {}."""
+    return r.json().get("hookSpecificOutput", {}).get("additionalContext", "")
+
+
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
@@ -72,7 +77,7 @@ class TestPostEditEndpoint:
             "tool_input": {"file_path": "/nonexistent/f.py"},
         })
         assert resp.status_code == 200
-        assert resp.text == ""
+        assert _ac(resp) == ""
 
     def test_no_cwd_no_project_silent_empty(self, client):
         # Scenario B: no cwd provided → no auto-registration anchor → silent empty.
@@ -82,7 +87,7 @@ class TestPostEditEndpoint:
             "tool_input": {"file_path": "/some/f.py"},
         })
         assert resp.status_code == 200
-        assert resp.text == ""
+        assert _ac(resp) == ""
 
     def test_returns_empty_when_no_incidents(self, client, store_and_project, tmp_path):
         store, pid, root = store_and_project
@@ -92,7 +97,7 @@ class TestPostEditEndpoint:
             "tool_input": {"file_path": src},
         })
         assert resp.status_code == 200
-        assert resp.text == ""
+        assert _ac(resp) == ""
 
     def test_project_resolved_via_cwd_fallback(self, client, store_and_project, tmp_path):
         store, pid, root = store_and_project
@@ -112,13 +117,13 @@ class TestPostEditEndpoint:
             "tool_input": {},
         })
         assert resp.status_code == 200
-        assert resp.text == ""
+        assert _ac(resp) == ""
 
     def test_malformed_json_returns_empty(self, client):
         resp = client.post("/buer/post-edit", content=b"not-json",
                            headers={"Content-Type": "application/json"})
         assert resp.status_code == 200
-        assert resp.text == ""
+        assert _ac(resp) == ""
 
 
 # ── end-to-end: 5 edits → stuck_region in response ───────────────────────────
@@ -145,7 +150,7 @@ class TestEndToEnd:
         })
 
         assert resp.status_code == 200
-        body = resp.text
+        body = _ac(resp)
         assert "[BUER] stuck_region" in body
         assert "target_fn" in body
 
@@ -166,7 +171,7 @@ class TestEndToEnd:
         })
 
         # The chain_length field in details should be 5
-        body = resp.text
+        body = _ac(resp)
         assert "5" in body
 
     def test_delivery_taken_only_once(self, client, store_and_project, tmp_path):
@@ -189,8 +194,8 @@ class TestEndToEnd:
             "tool_input": {"file_path": src},
         })
 
-        assert "[BUER]" in resp1.text
-        assert resp2.text == ""  # already taken
+        assert "[BUER]" in _ac(resp1)
+        assert _ac(resp2) == ""  # already taken
 
 
 # ── check_drift tool ──────────────────────────────────────────────────────────
