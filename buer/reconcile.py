@@ -32,7 +32,7 @@ def _is_source(name: str) -> bool:
 @dataclass
 class ReconcileResult:
     affected: list = field(default_factory=list)    # [(file_path, define_name, det_id), ...]
-    boundary_violations: list = field(default_factory=list)  # reserved for future signals
+    boundary_violations: list = field(default_factory=list)  # out-of-project paths only (_within_boundary=False); should_ingest=False paths are NOT included
     deleted: list = field(default_factory=list)     # define_names that vanished from each file
 
 
@@ -126,8 +126,7 @@ def reconcile(
             result.boundary_violations.append(file_path)
             continue
         if not boundary.should_ingest(file_real, roots_real[0]):
-            result.boundary_violations.append(file_path)
-            continue
+            continue  # in-project but skip ingest (build output / nested repo / gitignored); not a boundary breach
 
         if exclude_tests and parse.is_test_file(file_path):
             continue

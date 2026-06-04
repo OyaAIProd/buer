@@ -7,6 +7,12 @@ from buer.reconcile import reconcile
 from buer.store import Store
 
 
+def _open_boundary_breaches(store: Store, pid: int) -> list[str]:
+    """Return target_node values for open boundary_breach incidents."""
+    rows = store.open_incidents(pid)
+    return [r["target_node"] for r in rows if r["signal"] == "boundary_breach"]
+
+
 def _setup(tmp_path, gitignore_text):
     """Write .gitignore and return (root_real,)."""
     (tmp_path / ".gitignore").write_text(textwrap.dedent(gitignore_text))
@@ -144,7 +150,50 @@ def test_e2e_gitignore_exclusion(tmp_path):
     assert "buildFunc" not in names
 
     violations = result.boundary_violations
-    assert str(cov_dir / "c.py") in violations
-    assert str(build_dir / "b.ts") in violations
+    assert str(cov_dir / "c.py") not in violations    # in-project but gitignored → not a breach
+    assert str(build_dir / "b.ts") not in violations  # in-project but gitignored → not a breach
+
+    store.close()
+
+
+# ── 11. Core fix: should_ingest=False → NOT in boundary_violations, no incident ──
+
+def test_gitignored_file_not_in_violations(tmp_path):
+    """In-project gitignored files must not appear in boundary_violations or trigger boundary_breach."""
+    (tmp_path / ".gitignore").write_text("build/\n")
+    _gitignore_dir_patterns.cache_clear()
+
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    py_file = build_dir / "output.py"
+    py_file.write_text("x = 1\n")
+
+    store = Store(str(tmp_path / "test.sqlite"))
+    pid = store.get_or_create_project(str(tmp_path))
+
+    result = reconcile(store, pid, [str(py_file)])
+
+    assert str(py_file) not in result.boundary_violations
+    assert _open_boundary_breaches(store, pid) == []
+
+    store.close()
+
+
+# ── 12. Regression: true out-of-project path still reported and fires incident ──
+
+def test_true_boundary_breach_still_reported(tmp_path):
+    """A file genuinely outside the project root must land in boundary_violations and open an incident."""
+    _gitignore_dir_patterns.cache_clear()
+
+    outside_file = str(tmp_path.parent / "outside_buer_test.py")
+
+    store = Store(str(tmp_path / "test.sqlite"))
+    pid = store.get_or_create_project(str(tmp_path))
+
+    result = reconcile(store, pid, [outside_file])
+
+    assert outside_file in result.boundary_violations
+    breaches = _open_boundary_breaches(store, pid)
+    assert outside_file in breaches
 
     store.close()

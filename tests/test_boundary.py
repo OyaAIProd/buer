@@ -142,8 +142,8 @@ def test_e2e_reconcile_excludes_nested(tmp_path):
     assert "main_func" in names, "main project define must be ingested"
     assert "sub_func" not in names, "nested subproject define must NOT be ingested"
 
-    assert str(sub_py) in result.boundary_violations, (
-        "nested subproject file must appear in boundary_violations"
+    assert str(sub_py) not in result.boundary_violations, (
+        "nested subproject file is in-project (should_ingest=False), not a boundary breach"
     )
 
     store.close()
