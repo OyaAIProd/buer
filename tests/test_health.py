@@ -357,3 +357,55 @@ class TestMcpTools:
         assert "dismissed" in result.lower()
         assert store.safety_net_state(pid, "no_tests") == "dismissed"
         _set_store_for_testing(None)
+
+
+# ── 84a6ca6: safety_net delivery kind must be 'suggestion' ───────────────────
+
+class TestSafetyNetKind:
+    """Verify that safety net warnings are enqueued as kind='suggestion'.
+
+    84a6ca6 changed health.py line 221 from the default kind='alert' to
+    kind='suggestion'.  These two tests pin that behaviour so any revert
+    causes an immediate assertion failure.
+    """
+
+    def test_safety_net_delivery_kind_is_suggestion(
+        self, store_and_project, tmp_path, monkeypatch
+    ):
+        """maybe_run_safety_net must write kind='suggestion', not 'alert'."""
+        store, pid, root = store_and_project
+
+        # Force the period gate to fire without inserting HEALTH_CHECK_PERIOD rows.
+        monkeypatch.setattr(
+            health, "_count_total_edits",
+            lambda s, p: health.HEALTH_CHECK_PERIOD,
+        )
+        # Return a deterministic warning so new_warnings is non-empty.
+        monkeypatch.setattr(
+            health, "detect_safety_net",
+            lambda s, p, r: [{"type": "no_git", "message": "stale commits"}],
+        )
+
+        health.maybe_run_safety_net(store, pid, root)
+
+        rows = store.con.execute(
+            "SELECT kind FROM pending_deliveries WHERE project_id = ?", (pid,)
+        ).fetchall()
+        assert len(rows) == 1, "expected exactly one delivery row"
+        assert rows[0]["kind"] == "suggestion", (
+            "safety net delivery must be kind='suggestion' so Stop hook never blocks on it"
+        )
+
+    def test_safety_net_suggestion_not_taken_by_stop(self, store_and_project):
+        """A safety net suggestion must be invisible to Stop's alert-only take."""
+        store, pid, root = store_and_project
+
+        store.enqueue_delivery(pid, None, "user", "safety net warning", kind="suggestion")
+
+        # Stop handler calls take_user_deliveries(pid, kinds=("alert",)) — must return empty.
+        alert_rows = store.take_user_deliveries(pid, kinds=("alert",))
+        assert alert_rows == [], "Stop must not consume a safety net suggestion"
+
+        # SessionStart handler calls take_user_deliveries(pid, kinds=("suggestion",)) — returns 1.
+        suggestion_rows = store.take_user_deliveries(pid, kinds=("suggestion",))
+        assert len(suggestion_rows) == 1
