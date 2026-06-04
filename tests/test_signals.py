@@ -374,7 +374,7 @@ class TestDetectDefineLoop:
         assert details["earlier_seq"] == 1
         assert details["later_seq"] == 3
         # Loop trigger → "已回退到之前的结构状态" message
-        assert "reverted to a prior structural state" in details["loop_question"]
+        assert "reverted to a structural state it held earlier" in details["loop_question"]
 
     def test_adjacent_same_fp_no_trigger(self):
         """Adjacent fp repeat (gap=1 < N_LOOP_GAP=2): not a loop."""

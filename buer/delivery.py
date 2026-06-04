@@ -59,7 +59,7 @@ def agent_message(inc) -> str:
     """Generate agent-facing reminder text from an incident row.
 
     Uses inc["details"] (JSON string) only; no additional DB lookups.
-    All content fields (question, root_cause_note, loop_question, lateral,
+    All content fields (question, direction_note, loop_question, lateral,
     duplicate_peers, etc.) were computed by the respective signal detectors
     and stored in details — this function only formats them.
     """
@@ -79,7 +79,7 @@ def agent_message(inc) -> str:
         n = details.get("chain_length", "?")
         tier = details.get("test_tier", "")
         tcs = details.get("test_cases") or []
-        note = details.get("root_cause_note", "")
+        note = details.get("direction_note", "")
         tc_str = ", ".join(tcs[:3]) + (" …" if len(tcs) > 3 else "")
         lines = [
             f"[BUER] debug_loop: {target}",
@@ -164,7 +164,7 @@ def user_message(inc) -> str:
         n = details.get("chain_length", "?")
         body = f"this define has been revised {n} times; BUER has reminded the agent multiple times but the signal continues to fire."
         if signal == "debug_loop":
-            note = details.get("root_cause_note", "")
+            note = details.get("direction_note", "")
             if note:
                 body += f"\ndirection hint: {note}"
         lines = [header, body] + _lateral_lines(details)

@@ -53,12 +53,12 @@ class TestAgentMessage:
         msg = delivery.agent_message(inc)
         assert "g.bar" in msg
 
-    def test_debug_loop_includes_root_cause_note(self):
+    def test_debug_loop_includes_direction_note(self):
         inc = _fake_inc("debug_loop", "/f.py::fn", {
             "chain_length": 5,
             "test_tier": "precise",
             "test_cases": ["tests.T::test_fn"],
-            "root_cause_note": "检查上游 dependency",
+            "direction_note": "检查上游 dependency",
         })
         msg = delivery.agent_message(inc)
         assert "[BUER] debug_loop" in msg
@@ -129,10 +129,10 @@ class TestUserMessage:
         assert "tests.T::test_fn" in msg
         assert "是预期的吗？" in msg
 
-    def test_debug_loop_user_message_includes_root_cause(self):
+    def test_debug_loop_user_message_includes_direction_note(self):
         inc = _fake_inc("debug_loop", "/f.py::fn", {
             "chain_length": 6,
-            "root_cause_note": "检查上游 bar",
+            "direction_note": "检查上游 bar",
         })
         msg = delivery.user_message(inc)
         assert "检查上游 bar" in msg

@@ -280,21 +280,21 @@ class TestExclusivity:
 # Root cause direction (§2.2 压测反思#1)
 # ---------------------------------------------------------------------------
 
-class TestRootCauseDirection:
-    def test_details_contain_root_cause_note(self):
+class TestDirectionNote:
+    def test_details_contain_direction_note(self):
         store, pid, det_ids = _setup_basic(precise=True)
         signals.detect_debug_loop(store, pid, [(FILE, DEFINE, det_ids[-1])], ROOT, EMPTY_IDX)
 
         details = json.loads(_open_incs(store, pid, "debug_loop")[0]["details"])
-        assert "root_cause_note" in details
-        assert len(details["root_cause_note"]) > 0
+        assert "direction_note" in details
+        assert len(details["direction_note"]) > 0
 
-    def test_root_cause_note_mentions_define(self):
+    def test_direction_note_mentions_define(self):
         store, pid, det_ids = _setup_basic(precise=True)
         signals.detect_debug_loop(store, pid, [(FILE, DEFINE, det_ids[-1])], ROOT, EMPTY_IDX)
 
         details = json.loads(_open_incs(store, pid, "debug_loop")[0]["details"])
-        assert DEFINE in details["root_cause_note"]
+        assert DEFINE in details["direction_note"]
 
     def test_details_contain_chain_length_and_test_cases(self):
         store, pid, det_ids = _setup_basic(precise=True)

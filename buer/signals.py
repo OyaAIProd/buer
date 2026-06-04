@@ -440,12 +440,12 @@ def _recently_modified_callees(
     return result
 
 
-def _root_cause_note(
+def _direction_note(
     define_name: str,
     recently_modified: list[str],
     lateral: dict,
 ) -> str:
-    """Root-cause direction using three structural dimensions (§3.2 / §3.5).
+    """Structural direction hint using three structural dimensions (§3.2 / §3.5).
 
     Priority:
       1. Recently-modified callees + Γ_R recent neighbors — two lines of evidence
@@ -470,7 +470,7 @@ def _root_cause_note(
         deps = ", ".join(recently_modified[:3])
         return (
             f"{define_name} depends on {deps}, "
-            "which was also modified in the same change window — likely root cause; check upstream first"
+            "which was also modified in the same change window — worth checking upstream first"
         )
     if gr_recent:
         gr_str = ", ".join(gr_recent[:3])
@@ -517,7 +517,7 @@ def detect_debug_loop(
       (3) persistent failure: every associated test case was failing in ALL
           test_runs within the define's edit window — tests passed → not debug_loop
 
-    Root-cause direction (§2.2 压测反思#1) is always attached to details so
+    Structural direction hint (§2.2 压测反思#1) is always attached to details so
     the agent gets "往哪看" not just "你卡住了".
     """
     for file_path, define_name, _det_id in affected:
@@ -547,7 +547,7 @@ def detect_debug_loop(
         recently_modified = _recently_modified_callees(
             store, project_id, file_path, define_name, chain, root, idx
         )
-        note = _root_cause_note(define_name, recently_modified, lateral)
+        note = _direction_note(define_name, recently_modified, lateral)
 
         store.write_incident(
             project_id,
@@ -561,7 +561,7 @@ def detect_debug_loop(
                 "test_tier": tier,
                 "recently_modified_callees": recently_modified,
                 "lateral": lateral,
-                "root_cause_note": note,
+                "direction_note": note,
                 "consecutive_stable": 0,
             }),
         )
@@ -1058,12 +1058,12 @@ def _build_define_loop_message(
 
     if trigger_type in ("loop", "both"):
         # Precise loop-back: early signal
-        base = f"[BUER] {define_name} has reverted to a prior structural state — if attempts here aren't working, the issue may be elsewhere."
+        base = f"[BUER] {define_name} has reverted to a structural state it held earlier — this region is cycling rather than converging."
     elif error_class == "type1":
         base = (
             f"[BUER] {define_name} has been modified {consec} consecutive times; "
-            f"the error type remains the same ({sig_current}) — these changes have not reached the root cause. "
-            f"Consider reverting and looking elsewhere."
+            f"the error signature is unchanged across these {consec} edits ({sig_current}). "
+            f"Repeated edits here have not changed the error — consider whether the cause lies elsewhere."
         )
     elif error_class == "type2":
         sig_change = f"{sig_prev}→{sig_current}" if sig_prev else sig_current

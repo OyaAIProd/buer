@@ -7,7 +7,7 @@ Covers:
   - Causal independence: different components ↔ no shared 𝒢_D path
   - The "indirect but not Γ_R adjacent" case: A→B→C←D, A not Γ_R neighbor of D
   - _lateral_context: all three dimensions populated correctly
-  - _root_cause_note: priority cascade over three dimensions
+  - _direction_note: priority cascade over three dimensions
   - _lateral_lines: renders both shared_ancestry and gamma_r
 """
 import json
@@ -418,23 +418,23 @@ class TestLateralContextIntegration:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TestRootCauseNoteThreeDimensions — priority cascade
+# TestDirectionNoteThreeDimensions — priority cascade
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestRootCauseNoteThreeDimensions:
+class TestDirectionNoteThreeDimensions:
     def test_callee_and_gamma_r_recent_highest_priority(self):
         lateral = {
             "gamma_r": [{"define": "b.hub", "recently_modified": True}],
             "shared_ancestry": [{"define": "c.dep", "omega": 3}],
         }
-        note = signals._root_cause_note("fn", ["a.dep"], lateral)
+        note = signals._direction_note("fn", ["a.dep"], lateral)
         assert "a.dep" in note
         assert "b.hub" in note
         assert "two converging signals" in note
 
     def test_callee_only_second_priority(self):
         lateral = {"gamma_r": [], "shared_ancestry": []}
-        note = signals._root_cause_note("fn", ["a.dep"], lateral)
+        note = signals._direction_note("fn", ["a.dep"], lateral)
         assert "a.dep" in note
         assert "change window" in note
         assert "two converging signals" not in note
@@ -444,7 +444,7 @@ class TestRootCauseNoteThreeDimensions:
             "gamma_r": [{"define": "b.hub", "recently_modified": True}],
             "shared_ancestry": [],
         }
-        note = signals._root_cause_note("fn", [], lateral)
+        note = signals._direction_note("fn", [], lateral)
         assert "b.hub" in note
         assert "Γ_R" in note
         assert "recently modified" in note
@@ -454,7 +454,7 @@ class TestRootCauseNoteThreeDimensions:
             "gamma_r": [{"define": "b.hub", "recently_modified": False}],
             "shared_ancestry": [],
         }
-        note = signals._root_cause_note("fn", [], lateral)
+        note = signals._direction_note("fn", [], lateral)
         assert "b.hub" in note
         assert "Γ_R" in note
 
@@ -462,12 +462,12 @@ class TestRootCauseNoteThreeDimensions:
         lateral = {
             "shared_ancestry": [{"define": "c.dep", "omega": 5}],
         }
-        note = signals._root_cause_note("fn", [], lateral)
+        note = signals._direction_note("fn", [], lateral)
         assert "c.dep" in note
         assert "ω>0" in note
 
     def test_fallback_when_all_empty(self):
-        note = signals._root_cause_note("fn", [], {})
+        note = signals._direction_note("fn", [], {})
         assert "fn" in note
         assert len(note) > 10  # not empty
 
@@ -477,7 +477,7 @@ class TestRootCauseNoteThreeDimensions:
             "gamma_r": [{"define": "b.hub", "recently_modified": True}],
             "shared_ancestry": [{"define": "c.dep", "omega": 10}],
         }
-        note = signals._root_cause_note("fn", [], lateral)
+        note = signals._direction_note("fn", [], lateral)
         # Should use Γ_R recent, not ω
         assert "b.hub" in note
         assert "recently modified" in note
