@@ -141,8 +141,15 @@ class TestReconcileNumericBlindness:
             "got same count — numeric_literals not in fingerprint?"
         )
 
-    def test_non_numeric_non_structural_change_still_invisible(self, tmp_path):
-        """Sanity: renaming a local variable with same structure stays same fingerprint."""
+    def test_local_rename_recorded_as_change_but_fingerprint_stable(self, tmp_path):
+        """Local variable rename: content_hash detects it (new det recorded),
+        but coarse/fine fingerprint is stable (same structure, no numerics).
+
+        This is the intended split: content_hash is the precise change signal
+        (records a new determination so the version chain grows), while coarse/fine
+        remain stable so repeated trivial renames don't trigger define_loop false
+        positives (loop detection requires both coarse AND fine to match).
+        """
         from buer.reconcile import reconcile
 
         store = _mem_store()
@@ -156,9 +163,20 @@ class TestReconcileNumericBlindness:
         _write(p, "def foo(x):\n    val = x\n    return val\n")
         reconcile(store, pid, [p])
 
-        # Same structure, same numerics (none) → should still be 1 determination
+        # content_hash differs (different tokens) → new determination recorded
         dets = store.version_chain(pid, p, "foo")
-        assert len(dets) == 1
+        assert len(dets) == 2
+
+        # coarse/fine fingerprints are identical across both versions
+        from buer import parse
+        v1_defs = {d.qualified_name: d for d in parse.extract_defines(p)}
+        # (file now contains val version; coarse/fine computed from Define)
+        coarse_v2, fine_v2 = parse.compute_fingerprint(v1_defs["foo"])
+        rec = store.recorded_defines_for_file(pid, p)
+        # Both dets share the same coarse fingerprint stored in the latest record
+        assert dets[0]["node_fingerprint"] == dets[1]["node_fingerprint"], (
+            "coarse fingerprint must be stable across local variable rename"
+        )
 
 
 # ── 6. Does not descend into nested defs ─────────────────────────────────────

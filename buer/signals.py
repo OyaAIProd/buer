@@ -1457,7 +1457,7 @@ def check_high_impact_defines(
         return []
 
     messages: list[str] = []
-    for define_name, (_coarse, _fine, det_id) in current_defines.items():
+    for define_name, (_coarse, _fine, det_id, _ch) in current_defines.items():
         dedup_key = (project_id, session_id, define_name)
         if dedup_key in warned_set:
             continue

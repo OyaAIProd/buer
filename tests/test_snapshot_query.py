@@ -80,37 +80,33 @@ def test_list_snapshots_ordered(tmp_path):
 def test_define_fingerprints_at_seq(tmp_path):
     s = _store()
     pid = s.get_or_create_project(str(tmp_path))
-    fp_a_old = "fp_a_old"
-    fp_a_new = "fp_a_new"
-    fp_b = "fp_b"
     f = str(tmp_path / "m.py")
     s.con.execute(
-        "INSERT INTO determinations (project_id, seq, file_path, define_name, node_fingerprint, edit_type, created_at)"
-        " VALUES (?, 1, ?, 'A', ?, 'create', datetime('now'))",
-        (pid, f, fp_a_old),
+        "INSERT INTO determinations (project_id, seq, file_path, define_name, node_fingerprint, content_hash, edit_type, created_at)"
+        " VALUES (?, 1, ?, 'A', 'fp_a_old', 'ch_a_old', 'create', datetime('now'))",
+        (pid, f),
     )
     s.con.execute(
-        "INSERT INTO determinations (project_id, seq, file_path, define_name, node_fingerprint, edit_type, created_at)"
-        " VALUES (?, 2, ?, 'B', ?, 'create', datetime('now'))",
-        (pid, f, fp_b),
+        "INSERT INTO determinations (project_id, seq, file_path, define_name, node_fingerprint, content_hash, edit_type, created_at)"
+        " VALUES (?, 2, ?, 'B', 'fp_b', 'ch_b', 'create', datetime('now'))",
+        (pid, f),
     )
     s.con.execute(
-        "INSERT INTO determinations (project_id, seq, file_path, define_name, node_fingerprint, edit_type, created_at)"
-        " VALUES (?, 3, ?, 'A', ?, 'modify', datetime('now'))",
-        (pid, f, fp_a_new),
+        "INSERT INTO determinations (project_id, seq, file_path, define_name, node_fingerprint, content_hash, edit_type, created_at)"
+        " VALUES (?, 3, ?, 'A', 'fp_a_new', 'ch_a_new', 'modify', datetime('now'))",
+        (pid, f),
     )
     s.con.commit()
 
-    # define_fingerprints_at_seq now returns (coarse, fine) pairs.
-    # Records inserted without fine_fingerprint have fine=None.
+    # define_fingerprints_at_seq now returns {key: content_hash} scalars.
     at2 = s.define_fingerprints_at_seq(pid, 2)
-    assert at2[(f, "A")] == (fp_a_old, None)
-    assert at2[(f, "B")] == (fp_b, None)
+    assert at2[(f, "A")] == "ch_a_old"
+    assert at2[(f, "B")] == "ch_b"
     assert len(at2) == 2
 
     at3 = s.define_fingerprints_at_seq(pid, 3)
-    assert at3[(f, "A")] == (fp_a_new, None)
-    assert at3[(f, "B")] == (fp_b, None)
+    assert at3[(f, "A")] == "ch_a_new"
+    assert at3[(f, "B")] == "ch_b"
     assert len(at3) == 2
     s.close()
 
@@ -219,22 +215,25 @@ def test_diff_removed(tmp_path):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_diff_changed(tmp_path):
+    # Core scenario: same node_fingerprint (coarse/fine unchanged) but different
+    # content_hash (body refactored) → compare_snapshots must report "Changed".
+    # This validates the content_hash-based second outlet for change detection.
     _init_git_repo(tmp_path)
     s = _store()
     pid = s.get_or_create_project(str(tmp_path), branch="main")
     f = str(tmp_path / "m.py")
 
     s.con.execute(
-        "INSERT INTO determinations (project_id, seq, file_path, define_name, node_fingerprint, edit_type, created_at)"
-        " VALUES (?, 1, ?, 'A', 'fp_old', 'create', datetime('now'))",
+        "INSERT INTO determinations (project_id, seq, file_path, define_name, node_fingerprint, content_hash, edit_type, created_at)"
+        " VALUES (?, 1, ?, 'A', 'fp_stable', 'ch_old', 'create', datetime('now'))",
         (pid, f),
     )
     commit_a = "a" * 40
     s.create_snapshot(pid, commit_a, "main", 1, None, reason="commit")
 
     s.con.execute(
-        "INSERT INTO determinations (project_id, seq, file_path, define_name, node_fingerprint, edit_type, created_at)"
-        " VALUES (?, 2, ?, 'A', 'fp_new', 'modify', datetime('now'))",
+        "INSERT INTO determinations (project_id, seq, file_path, define_name, node_fingerprint, content_hash, edit_type, created_at)"
+        " VALUES (?, 2, ?, 'A', 'fp_stable', 'ch_new', 'modify', datetime('now'))",
         (pid, f),
     )
     commit_b = "b" * 40
@@ -286,16 +285,16 @@ def test_diff_commit_prefix(tmp_path):
     f = str(tmp_path / "m.py")
 
     s.con.execute(
-        "INSERT INTO determinations (project_id, seq, file_path, define_name, node_fingerprint, edit_type, created_at)"
-        " VALUES (?, 1, ?, 'A', 'fp_old', 'create', datetime('now'))",
+        "INSERT INTO determinations (project_id, seq, file_path, define_name, node_fingerprint, content_hash, edit_type, created_at)"
+        " VALUES (?, 1, ?, 'A', 'fp_stable', 'ch_old', 'create', datetime('now'))",
         (pid, f),
     )
     commit_a = "abcdef1234567890" + "0" * 24
     s.create_snapshot(pid, commit_a, "main", 1, None, reason="commit")
 
     s.con.execute(
-        "INSERT INTO determinations (project_id, seq, file_path, define_name, node_fingerprint, edit_type, created_at)"
-        " VALUES (?, 2, ?, 'A', 'fp_new', 'modify', datetime('now'))",
+        "INSERT INTO determinations (project_id, seq, file_path, define_name, node_fingerprint, content_hash, edit_type, created_at)"
+        " VALUES (?, 2, ?, 'A', 'fp_stable', 'ch_new', 'modify', datetime('now'))",
         (pid, f),
     )
     commit_b = "fedcba9876543210" + "0" * 24
