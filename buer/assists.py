@@ -560,6 +560,19 @@ def run_inline_assists(
     channel = "agent" if winner.kind == "run_tests" else "user"
     store.enqueue_delivery(project_id, None, channel, winner.message, kind="suggestion")
 
+    # B-mechanism: record the define set this suggestion covered, so we only
+    # re-suggest when a new member appears (not on every repeat edit).
+    if winner.kind == "commit":
+        store.update_assist_state(
+            project_id,
+            last_commit_suggest_defines=_serialize_defines(winner.suggested_defines),
+        )
+    elif winner.kind == "run_tests":
+        store.update_assist_state(
+            project_id,
+            last_run_tests_suggest_defines=_serialize_defines(winner.suggested_defines),
+        )
+
 
 # ── acknowledge_commit (§4.10) ────────────────────────────────────────────────
 
@@ -573,5 +586,6 @@ def acknowledge_commit(store: Store, project_id: int) -> str:
     store.update_assist_state(
         project_id,
         last_commit_seq=seq,
+        last_commit_suggest_defines="",
     )
     return f"[BUER] commit point recorded (seq={seq}). BUER has reset commit-timing tracking."

@@ -1558,6 +1558,7 @@ async def post_bash_handler(request: Request) -> Response:
                     parent = git_utils.get_parent_commit(root, head)
                     seq = store.max_seq(pid)
                     store.create_snapshot(pid, head, branch, seq, parent, reason="commit")
+                    store.update_assist_state(pid, last_commit_seq=seq, last_commit_suggest_defines="")
         except Exception:
             pass  # snapshot failure must not affect post_bash main flow
 
