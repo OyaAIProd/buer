@@ -1525,7 +1525,7 @@ async def post_bash_handler(request: Request) -> Response:
             if not store.recent_xml_run_exists(pid, within_seconds=120):
                 fp = cmd_fingerprint(command)
                 if not store.recent_stdout_run_for_cmd(pid, fp, within_seconds=30):
-                    store.insert_test_run(
+                    run_id = store.insert_test_run(
                         project_id=pid,
                         seq=store.max_seq(pid) or None,
                         source_path=f"stdout:{fp}",
@@ -1537,6 +1537,14 @@ async def post_bash_handler(request: Request) -> Response:
                         skipped=result["skipped"],
                         source="stdout",
                     )
+                    for c in result.get("cases", []):
+                        try:
+                            store.insert_test_case(
+                                run_id, c["classname"], c["name"],
+                                c.get("file_path"), c["status"],
+                            )
+                        except Exception:
+                            pass  # per-case failure must not break post_bash
 
     # Feature 3: git commit → create snapshot (git integration batch 2)
     if command and _is_git_commit(command):

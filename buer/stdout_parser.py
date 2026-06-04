@@ -56,6 +56,51 @@ _PYTEST_PASSED_RE  = re.compile(r"(\d+)\s+passed",                   re.IGNORECA
 _PYTEST_FAILED_RE  = re.compile(r"(\d+)\s+(?:failed|error)",         re.IGNORECASE)
 _PYTEST_SKIPPED_RE = re.compile(r"(\d+)\s+skipped",                  re.IGNORECASE)
 
+_PYTEST_CASE_RE = re.compile(
+    r"^(?P<path>(?:[^\s:]+/)*[^\s:]+\.py)::(?P<nodeid>\S+)\s+"
+    r"(?P<status>PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)\b"
+)
+_PYTEST_STATUS_MAP = {
+    "PASSED": "passed", "XPASS": "passed",
+    "FAILED": "failed", "ERROR": "error",
+    "SKIPPED": "skipped", "XFAIL": "skipped",
+}
+
+
+def _pytest_cases(output: str) -> list[dict]:
+    """Parse per-testcase lines from `pytest -v` stdout.
+
+    Each line: 'tests/test_x.py::test_y[param] PASSED [ 12%]'
+                'tests/test_x.py::TestC::test_y FAILED'
+    Produces classname/name matching pytest's JUnit XML convention so that
+    test_case_history (keyed by classname+name) does not fracture across
+    XML and stdout sources.
+    """
+    cases = []
+    for line in output.splitlines():
+        m = _PYTEST_CASE_RE.match(line.strip())
+        if not m:
+            continue
+        path = m.group("path")
+        nodeid = m.group("nodeid")
+        status = _PYTEST_STATUS_MAP.get(m.group("status"))
+        if status is None:
+            continue
+        # path -> dotted module (pytest XML classname convention)
+        mod = path[:-3] if path.endswith(".py") else path   # strip .py
+        mod = mod.lstrip("./").replace("/", ".")
+        parts = nodeid.split("::")
+        name = parts[-1]                       # func name + [param]
+        cls_parts = parts[:-1]                 # optional Test class chain
+        classname = ".".join([mod, *cls_parts]) if cls_parts else mod
+        cases.append({
+            "classname": classname,
+            "name": name,
+            "file_path": path,
+            "status": status,
+        })
+    return cases
+
 
 def _parse_pytest(output: str) -> Optional[dict]:
     """pytest summary line: '=== N passed, M failed … in Xs ==='"""
@@ -74,7 +119,8 @@ def _parse_pytest(output: str) -> Optional[dict]:
     skipped = int(m.group(1)) if (m := _PYTEST_SKIPPED_RE.search(summary)) else 0
     if passed == 0 and failed == 0:
         return None
-    return {"passed": passed, "failed": failed, "skipped": skipped, "runner": "pytest"}
+    return {"passed": passed, "failed": failed, "skipped": skipped,
+            "runner": "pytest", "cases": _pytest_cases(output)}
 
 
 _JEST_PASSED_RE  = re.compile(r"(\d+)\s+passed",          re.IGNORECASE)
