@@ -45,6 +45,15 @@ Note the DB path: `~/.buer/store.sqlite`, a fixed per-user location, **not** a p
 `.buer/`. A persistent server has no project working directory, so it uses one shared store
 and tells projects apart by the `cwd` each hook sends. The store schema is created on first start.
 
+### Project registration is automatic
+
+BUER has no explicit "register project" step. A project is registered automatically
+the first time a hook fires from its directory — including `session-start`, which
+registers the project and builds a structural baseline as soon as a session opens in
+a hook-configured directory. Configuring the hooks in a project IS the registration
+intent; no separate opt-in is needed. If you do not want a directory monitored, do not
+configure BUER hooks for it.
+
 Quick check once it's up:
 
 ```bash

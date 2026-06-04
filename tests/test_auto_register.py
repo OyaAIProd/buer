@@ -241,19 +241,19 @@ class TestQueryToolsNoAutoRegister:
 
 # ── F: session-start does not auto-register ──────────────────────────────────
 
-class TestSessionStartNoAutoRegister:
-    def test_session_start_silent_for_unregistered_cwd(self, client, fresh_store, tmp_path):
-        """Scenario F: session-start with unregistered cwd → silent empty 200,
-        no project created."""
+class TestSessionStartAutoRegister:
+    def test_session_start_auto_registers_cwd(self, client, fresh_store, tmp_path):
+        """session-start with a hook-configured cwd auto-registers the project and
+        builds a baseline (BUER identifies projects by the cwd each hook sends;
+        configuring the hook IS the registration intent)."""
         resp = client.post("/buer/session-start", json={
             "source": "startup",
             "cwd": str(tmp_path),
             "session_id": "sess-start-1",
         })
         assert resp.status_code == 200
-        assert _ac(resp) == ""
         rows = fresh_store.con.execute("SELECT COUNT(*) AS n FROM projects").fetchone()
-        assert rows["n"] == 0
+        assert rows["n"] == 1
 
     def test_stop_silent_for_unregistered_cwd(self, client, fresh_store, tmp_path):
         """stop handler with unregistered cwd → {} (allow), no project created."""
