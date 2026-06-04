@@ -414,12 +414,17 @@ def _build_run_tests_assist(
     if not affected:
         return InlineAssist(kind="run_tests", should_fire=False, message="")
 
+    state = store.get_assist_state(project_id)
+    last_set = _deserialize_defines(state["last_run_tests_suggest_defines"] if state else "")
+
     has_coverage = bool(store.covered_define_names(project_id))
 
     if has_coverage:
         # ── Precise tier ──────────────────────────────────────────────────────
         stale = _stale_covered_defines(store, project_id, affected)
         if not stale:
+            # All covering tests have run — reset so next stale define fires fresh.
+            store.update_assist_state(project_id, last_run_tests_suggest_defines="")
             return InlineAssist(kind="run_tests", should_fire=False, message="")
 
         # Deduplicate test cases; collect bare define names for message
@@ -433,6 +438,11 @@ def _build_run_tests_assist(
                 if tc not in seen_cases:
                     seen_cases.add(tc)
                     all_cases.append(tc)
+
+        # Gate B: only re-suggest if the stale set gained a define not in last suggestion.
+        stale_def_names = set(define_names)
+        if not _set_has_new_member(stale_def_names, last_set):
+            return InlineAssist(kind="run_tests", should_fire=False, message="")
 
         shown = all_cases[:5]
         more = len(all_cases) - len(shown)
@@ -453,7 +463,8 @@ def _build_run_tests_assist(
             "",
             "BUER does not run tests or guess commands — which tests to run and how is your call.",
         ])
-        return InlineAssist(kind="run_tests", should_fire=True, message=msg)
+        return InlineAssist(kind="run_tests", should_fire=True, message=msg,
+                            suggested_defines=stale_def_names)
 
     else:
         # ── Heuristic tier ────────────────────────────────────────────────────
@@ -475,9 +486,17 @@ def _build_run_tests_assist(
         # Any test run at or after the start of this edit batch?
         latest_tr_seq = store.latest_test_run_seq(project_id)
         if latest_tr_seq is not None and latest_tr_seq >= min_edit_seq:
+            # Tests have run — reset so next uncovered edit fires fresh.
+            store.update_assist_state(project_id, last_run_tests_suggest_defines="")
             return InlineAssist(kind="run_tests", should_fire=False, message="")
 
         define_names_all = [dn for _, dn, _ in affected if dn]
+
+        # Gate B: only re-suggest if the affected set gained a define not in last suggestion.
+        heuristic_def_names = set(define_names_all)
+        if not _set_has_new_member(heuristic_def_names, last_set):
+            return InlineAssist(kind="run_tests", should_fire=False, message="")
+
         shown_dn = define_names_all[:3]
         dn_str = ", ".join(shown_dn)
         if len(define_names_all) > 3:
@@ -490,7 +509,8 @@ def _build_run_tests_assist(
             "",
             "BUER does not run tests or guess commands — which tests to run and how is your call.",
         ])
-        return InlineAssist(kind="run_tests", should_fire=True, message=msg)
+        return InlineAssist(kind="run_tests", should_fire=True, message=msg,
+                            suggested_defines=heuristic_def_names)
 
 
 # ── arbitrate_inline_assists (§4.11) ──────────────────────────────────────────
