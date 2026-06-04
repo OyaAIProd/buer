@@ -218,7 +218,7 @@ def maybe_run_safety_net(
     )
     message = "\n".join(parts)
 
-    store.enqueue_delivery(project_id, None, "user", message)
+    store.enqueue_delivery(project_id, None, "user", message, kind="suggestion")
     for w in new_warnings:
         store.trigger_safety_net(project_id, w["type"])
 
