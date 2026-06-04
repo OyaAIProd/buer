@@ -12,7 +12,6 @@ from buer.assists import (
     HUB_THRESHOLD,
     CHANGE_FREQ_THRESHOLD,
     BLAST_RADIUS_THRESHOLD,
-    MIN_EDITS_BEFORE_COMMIT_SUGGEST,
     STABLE_WINDOW,
     InlineAssist,
 )

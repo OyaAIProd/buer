@@ -37,9 +37,7 @@ from buer.store import Store
 HUB_THRESHOLD = 3             # caller_count >= this → tag "影响大"
 CHANGE_FREQ_THRESHOLD = 3     # version_count >= this → tag "常改"
 BLAST_RADIUS_THRESHOLD = 3    # caller_count >= this → trigger blast_radius assist
-MIN_EDITS_BEFORE_COMMIT_SUGGEST = 3  # min edits since last commit to suggest
 STABLE_WINDOW = 5             # no active-define edits in last N seqs → stable
-COMMIT_SUGGEST_COOLDOWN = 15  # don't re-suggest within N seqs of last suggestion
 
 
 # ── InlineAssist ───────────────────────────────────────────────────────────────
@@ -213,11 +211,11 @@ def _build_commit_assist(
     """Check whether this is a good commit point (§4.10).
 
     Good-commit-point criteria (all must pass):
-      1. ≥ MIN_EDITS_BEFORE_COMMIT_SUGGEST edits since last commit
-      2. Structural stability: the commit cluster (changed defines excluding
+      1. Structural stability (Gate 3): the commit cluster (changed defines excluding
          currently-edited files) has not been touched in the last STABLE_WINDOW seqs
-      3. No open regression incidents (tests are green or absent)
-      4. Cooldown: last suggestion was > COMMIT_SUGGEST_COOLDOWN seqs ago
+      2. New define in cluster (Gate 2 B): the cluster contains at least one define
+         not present at the last commit suggestion (new risk surfaced since last prompt)
+      3. No open regression incidents (Gate 4): tests are green or absent
 
     'affected' is the list of (file_path, define_name, det_id) from the current
     reconcile call. Files in 'affected' are excluded from the stability cluster so
@@ -229,12 +227,6 @@ def _build_commit_assist(
     state = store.get_assist_state(project_id)
     last_commit_seq = state["last_commit_seq"] if state else 0
     cur_max = store.max_seq(project_id)
-
-    edits_since = cur_max - last_commit_seq
-
-    # Gate 1: enough edits since last commit
-    if edits_since < MIN_EDITS_BEFORE_COMMIT_SUGGEST:
-        return InlineAssist(kind="commit", should_fire=False, message="")
 
     # Gate 3: structural stability
     # Cluster = defines changed since last commit, excluding currently-edited files.
@@ -251,6 +243,13 @@ def _build_commit_assist(
 
     cluster_max_seq = max(row["last_seq"] for row in cluster_defs)
     if cur_max - cluster_max_seq < STABLE_WINDOW:
+        return InlineAssist(kind="commit", should_fire=False, message="")
+
+    # Gate 2 (B): only re-suggest if the uncommitted cluster gained a define
+    # not present at the last commit suggestion (new risk surfaced).
+    cluster_def_names = {row["define_name"] for row in cluster_defs if row["define_name"]}
+    last_set = _deserialize_defines(state["last_commit_suggest_defines"] if state else "")
+    if not _set_has_new_member(cluster_def_names, last_set):
         return InlineAssist(kind="commit", should_fire=False, message="")
 
     # Gate 4: no open regression
@@ -277,7 +276,7 @@ def _build_commit_assist(
 
     msg = "\n".join([
         "[BUER] 💡 commit timing suggestion (§4.10)",
-        f"this set of changes looks like a natural stopping point; {edits_since} edits since last commit — ready to commit?",
+        "this set of changes looks like a natural stopping point — ready to commit?",
         "('looks like a stopping point' is a structural stability judgment, not a semantic completeness check — verify logic yourself.)",
         "",
         f"suggested commit scope: {dir_str}",
@@ -286,7 +285,8 @@ def _build_commit_assist(
         "after committing, call acknowledge_commit to let BUER reset its commit-timing tracking.",
     ])
 
-    return InlineAssist(kind="commit", should_fire=True, message=msg)
+    return InlineAssist(kind="commit", should_fire=True, message=msg,
+                        suggested_defines=cluster_def_names)
 
 
 # ── inline assist: blast radius preview (§3.8) ────────────────────────────────
