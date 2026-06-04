@@ -261,16 +261,17 @@ class Store:
         fine_fingerprint: Optional[str] = None,
         start_line: int = 0,
         end_line: int = 0,
+        content_hash: str = "",
     ) -> int:
         """Insert one determination (one agent edit = one node). All args
         auto-derived from the changed file; none declared by the agent."""
         cur = self.con.execute(
             """INSERT INTO determinations
                (project_id, seq, file_path, define_name, node_fingerprint, return_type,
-                edit_type, fine_fingerprint, start_line, end_line, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                edit_type, fine_fingerprint, start_line, end_line, content_hash, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
             (project_id, seq, file_path, define_name, node_fingerprint, return_type,
-             edit_type, fine_fingerprint, start_line, end_line),
+             edit_type, fine_fingerprint, start_line, end_line, content_hash),
         )
         self.con.commit()
         return cur.lastrowid
@@ -287,6 +288,7 @@ class Store:
         file_mtime: Optional[float] = None,
         start_line: int = 0,
         end_line: int = 0,
+        content_hash: str = "",
     ) -> tuple[int, int]:
         """Atomically allocate next seq and insert the determination in one
         IMMEDIATE transaction, preventing the next_seq race between concurrent
@@ -306,10 +308,11 @@ class Store:
             ins = cur.execute(
                 """INSERT INTO determinations
                    (project_id, seq, file_path, define_name, node_fingerprint, return_type,
-                    edit_type, fine_fingerprint, file_mtime, start_line, end_line, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                    edit_type, fine_fingerprint, file_mtime, start_line, end_line, content_hash,
+                    created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
                 (project_id, seq, file_path, define_name, node_fingerprint, return_type,
-                 edit_type, fine_fingerprint, file_mtime, start_line, end_line),
+                 edit_type, fine_fingerprint, file_mtime, start_line, end_line, content_hash),
             )
             det_id = ins.lastrowid
             self.con.commit()
@@ -361,16 +364,17 @@ class Store:
 
     def recorded_defines_for_file(
         self, project_id: int, file_path: str
-    ) -> dict[str, tuple[str | None, str | None, int]]:
-        """Latest recorded (coarse, fine) fingerprint pair + det_id for each define.
+    ) -> dict[str, tuple[str | None, str | None, int, str]]:
+        """Latest recorded fingerprints + det_id for each define.
 
-        Returns {define_name: (node_fingerprint, fine_fingerprint, det_id)} using
-        the highest-seq determination per define_name.
+        Returns {define_name: (node_fingerprint, fine_fingerprint, det_id, content_hash)}
+        using the highest-seq determination per define_name.
         Used by reconcile to detect changed/deleted defines (§4.6 auto-derive).
         fine_fingerprint may be None for records written before the paired-fp migration.
+        content_hash is '' for records written before the content_hash migration.
         """
         rows = self.con.execute(
-            """SELECT d.define_name, d.node_fingerprint, d.fine_fingerprint, d.id
+            """SELECT d.define_name, d.node_fingerprint, d.fine_fingerprint, d.id, d.content_hash
                FROM determinations d
                WHERE d.project_id = ? AND d.file_path = ? AND d.define_name IS NOT NULL
                  AND d.seq = (
@@ -379,7 +383,8 @@ class Store:
                  )""",
             (project_id, file_path, project_id, file_path),
         ).fetchall()
-        return {r["define_name"]: (r["node_fingerprint"], r["fine_fingerprint"], r["id"])
+        return {r["define_name"]: (r["node_fingerprint"], r["fine_fingerprint"], r["id"],
+                                   r["content_hash"] or "")
                 for r in rows}
 
     # ---- dir_mtimes (directory-level mtime baselines for new-file detection) ----
@@ -1140,15 +1145,16 @@ class Store:
         ).fetchall()
 
     def define_fingerprints_at_seq(self, project_id: int, at_seq: int) -> dict:
-        """Reconstruct {(file_path, define_name): (coarse, fine)} as of `at_seq`.
+        """Reconstruct {(file_path, define_name): content_hash} as of `at_seq`.
 
         For each (file_path, define_name), take the latest determination with
         seq <= at_seq that is not a delete. Represents the live defines at that
         point in the version chain.
-        fine may be None for records pre-dating the paired-fp migration.
+        content_hash is '' for records written before the content_hash migration;
+        compare_snapshots treats '' == '' as unchanged (no false modify).
         """
         rows = self.con.execute(
-            """SELECT file_path, define_name, node_fingerprint, fine_fingerprint, edit_type
+            """SELECT file_path, define_name, content_hash, edit_type
                FROM determinations
                WHERE project_id = ? AND seq <= ? AND define_name IS NOT NULL
                ORDER BY file_path, define_name, seq""",
@@ -1158,8 +1164,8 @@ class Store:
         latest: dict = {}
         for r in rows:
             key = (r["file_path"], r["define_name"])
-            latest[key] = (r["node_fingerprint"], r["fine_fingerprint"], r["edit_type"])
-        return {k: (c, f) for k, (c, f, et) in latest.items() if et != "delete"}
+            latest[key] = (r["content_hash"] or "", r["edit_type"])
+        return {k: ch for k, (ch, et) in latest.items() if et != "delete"}
 
     def all_current_defines(self, project_id: int) -> list[sqlite3.Row]:
         """Latest determination for each distinct (file_path, define_name) pair.

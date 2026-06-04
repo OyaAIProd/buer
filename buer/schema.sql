@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS determinations (
     file_path        TEXT NOT NULL,
     define_name      TEXT,                    -- 函数/类名 (节点标识)
     node_fingerprint TEXT,                    -- 结构指纹 (define_loop / 等价类)
+    content_hash     TEXT NOT NULL DEFAULT '', -- body content hash for change detection (decoupled from coarse/fine)
     return_type      TEXT DEFAULT '',         -- 显式 -> Type 标注（L3 推断用）
     git_commit       TEXT,                    -- HEAD commit at determination time
     edit_type        TEXT CHECK(edit_type IN ('create', 'modify', 'delete')),
