@@ -226,15 +226,6 @@ class TestAssistCommitTiming:
         assert assist.should_fire is True
         assert assist.kind == "commit"
 
-    def test_no_fire_too_few_edits(self, store_and_project, tmp_path):
-        store, pid = store_and_project
-        root = str(tmp_path)
-        fp = os.path.join(root, "a.py")
-        for i in range(MIN_EDITS_BEFORE_COMMIT_SUGGEST - 1):
-            _det(store, pid, i + 1, fp, f"fn_{i}")
-        assist = assists._build_commit_assist(store, pid, root, [])
-        assert assist.should_fire is False
-
     def test_no_fire_when_open_regression(self, store_and_project, tmp_path):
         store, pid = store_and_project
         root = str(tmp_path)
@@ -272,13 +263,6 @@ class TestAssistCommitTiming:
         affected = [(fp, "fn_29", 30)]
         assist = assists._build_commit_assist(store, pid, root, affected)
         assert assist.should_fire is False
-
-    def test_message_contains_edit_count(self, store_and_project, tmp_path):
-        store, pid = store_and_project
-        root = str(tmp_path)
-        affected = self._setup_good_point(store, pid, root)
-        assist = assists._build_commit_assist(store, pid, root, affected)
-        assert "edits" in assist.message
 
     def test_message_says_looks_like(self, store_and_project, tmp_path):
         """Message must use hedged phrasing, not assert 'complete'."""
@@ -555,3 +539,136 @@ class TestMcpTools:
             assert "cover auth flows" in result or "no tests to add" in result
         finally:
             _set_store_for_testing(None)
+
+
+# ── TestRunTestsBThrottle ─────────────────────────────────────────────────────
+
+class TestRunTestsBThrottle:
+    """B-mechanism throttle for run_tests assist via real reconcile + tree-sitter."""
+
+    def test_b_mechanism_run_tests(self, tmp_path):
+        from buer.reconcile import reconcile
+
+        store = Store(":memory:")
+        pid = store.get_or_create_project(str(tmp_path))
+        root = str(tmp_path)
+
+        # Stub test file so _has_test_files returns True (heuristic tier)
+        (tmp_path / "test_stub.py").write_text("def test_nothing(): pass\n")
+        src = tmp_path / "src.py"
+
+        def agent_deliveries():
+            return store.peek_deliveries(pid, channel="agent")
+
+        # 1. First edit fn_a → fire (empty last_set → new member)
+        src.write_text("def fn_a(): pass\n")
+        reconcile(store, pid, [str(src)])
+        assert any("💡" in d["message"] for d in agent_deliveries()), \
+            "first edit should fire run_tests"
+        assert "fn_a" in store.get_assist_state(pid)["last_run_tests_suggest_defines"]
+
+        # 2. Re-edit fn_a (content change, same define) → B throttles
+        pre = len(agent_deliveries())
+        src.write_text("def fn_a(): return 1\n")
+        reconcile(store, pid, [str(src)])
+        assert len(agent_deliveries()) == pre, \
+            "B: fn_a already in last_set → no re-fire"
+
+        # 3. Add fn_b (fn_a body unchanged) → new member → fire
+        src.write_text("def fn_a(): return 1\ndef fn_b(): pass\n")
+        reconcile(store, pid, [str(src)])
+        assert len(agent_deliveries()) > pre, "B: fn_b is new member → fire"
+        assert "fn_b" in store.get_assist_state(pid)["last_run_tests_suggest_defines"]
+
+        # 4. Re-edit fn_b (content change) → B throttles
+        pre2 = len(agent_deliveries())
+        src.write_text("def fn_a(): return 1\ndef fn_b(): return 1\n")
+        result = reconcile(store, pid, [str(src)])
+        assert len(agent_deliveries()) == pre2, \
+            "B: fn_b already in last_set → no re-fire"
+
+        # 5. Simulate tests ran → reset
+        # Insert test_run at det_seq so latest_tr_seq >= min_edit_seq in the direct call
+        det_id = result.affected[0][2]   # fn_b det from real tree-sitter parse
+        det_seq = store.get_determination(det_id)["seq"]
+        store.insert_test_run(pid, det_seq, "junit.xml", "2024", 5, 0, 0)
+        # Direct call with the real det_ids already produced by reconcile
+        assists.run_inline_assists(store, pid, result.affected, root)
+        assert len(agent_deliveries()) == pre2, "tests ran → should not fire"
+        assert store.get_assist_state(pid)["last_run_tests_suggest_defines"] == "", \
+            "tests ran → last_set reset to empty"
+
+        # 6. After reset: first edit → fire fresh (last_set empty again)
+        pre3 = len(agent_deliveries())
+        src.write_text("def fn_a(): return 1\ndef fn_b(): return 2\n")
+        reconcile(store, pid, [str(src)])
+        assert len(agent_deliveries()) > pre3, "after reset → fire fresh"
+
+
+# ── TestCommitBThrottle ───────────────────────────────────────────────────────
+
+class TestCommitBThrottle:
+    """B-mechanism throttle for commit assist via real reconcile + tree-sitter."""
+
+    def test_b_mechanism_commit(self, tmp_path):
+        from buer.reconcile import reconcile
+
+        store = Store(":memory:")
+        pid = store.get_or_create_project(str(tmp_path))
+        root = str(tmp_path)
+
+        fp_a = tmp_path / "a.py"
+        fp_b = tmp_path / "b.py"
+
+        def user_deliveries():
+            return store.peek_deliveries(pid, channel="user")
+
+        # 1. Create cluster: fn_a in a.py
+        fp_a.write_text("def fn_a(): pass\n")
+        reconcile(store, pid, [str(fp_a)])
+
+        # 2. Pad b.py to stabilize cluster {fn_a} (STABLE_WINDOW=5 → 6 pads to be safe)
+        # First fire happens once cur_max - cluster_max >= STABLE_WINDOW.
+        for i in range(6):
+            fp_b.write_text(f"def pad(): return {i}\n")
+            reconcile(store, pid, [str(fp_b)])
+
+        assert any("stopping point" in d["message"] or "💡" in d["message"]
+                   for d in user_deliveries()), \
+            "stable cluster {fn_a} should fire commit suggestion"
+        assert "fn_a" in store.get_assist_state(pid)["last_commit_suggest_defines"]
+
+        # 3. More padding: B throttles (fn_a still in last_set)
+        pre = len(user_deliveries())
+        fp_b.write_text("def pad(): return 99\n")
+        reconcile(store, pid, [str(fp_b)])
+        assert len(user_deliveries()) == pre, \
+            "B: fn_a in last_set → no re-fire"
+
+        # 4. Add fn_b to cluster: fn_a body unchanged → only fn_b in affected
+        fp_a.write_text("def fn_a(): pass\ndef fn_b(): pass\n")
+        reconcile(store, pid, [str(fp_a)])
+        # Stabilize new cluster {fn_a, fn_b} with 6 more pads
+        for i in range(100, 106):
+            fp_b.write_text(f"def pad(): return {i}\n")
+            reconcile(store, pid, [str(fp_b)])
+
+        post = len(user_deliveries())
+        assert post > pre, "B: fn_b is new cluster member → fire"
+        assert "fn_b" in store.get_assist_state(pid)["last_commit_suggest_defines"]
+
+        # 5. acknowledge_commit → reset B state
+        assists.acknowledge_commit(store, pid)
+        state = store.get_assist_state(pid)
+        assert state["last_commit_suggest_defines"] == ""
+        assert state["last_commit_seq"] == store.max_seq(pid)
+
+        # 6. New cluster (after acknowledge) → fire fresh
+        fp_a.write_text("def fn_a(): return 99\ndef fn_b(): pass\n")
+        reconcile(store, pid, [str(fp_a)])
+        for i in range(200, 206):
+            fp_b.write_text(f"def pad(): return {i}\n")
+            reconcile(store, pid, [str(fp_b)])
+
+        assert len(user_deliveries()) > post, \
+            "after acknowledge_commit reset → fire fresh on new cluster"

@@ -239,7 +239,7 @@ class TestQueryToolsNoAutoRegister:
         assert rows["n"] == 0
 
 
-# ── F: session-start does not auto-register ──────────────────────────────────
+# ── F: session-start auto-registers (baseline build) ─────────────────────────
 
 class TestSessionStartAutoRegister:
     def test_session_start_auto_registers_cwd(self, client, fresh_store, tmp_path):
