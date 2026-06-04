@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import ast
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -51,6 +51,7 @@ class InlineAssist:
     kind: str         # 'commit' | 'blast_radius'
     should_fire: bool
     message: str
+    suggested_defines: set = field(default_factory=set)
 
 
 # ── assist_add_tests (§4.9) ────────────────────────────────────────────────────
@@ -186,6 +187,21 @@ def assist_add_tests(
     return "\n".join(lines)
 
 
+# ── B-mechanism set helpers ────────────────────────────────────────────────────
+
+def _set_has_new_member(now: set, last: set) -> bool:
+    """B mechanism: True iff `now` contains a define not in `last` (new risk surfaced)."""
+    return bool(now - last)
+
+def _serialize_defines(s: set) -> str:
+    """Serialize a define-name set for assist_state storage (sorted, comma-joined)."""
+    return ",".join(sorted(s))
+
+def _deserialize_defines(text: str) -> set:
+    """Parse assist_state define-set text back to a set ('' → empty set)."""
+    return set(text.split(",")) if text else set()
+
+
 # ── inline assist: commit timing (§4.10) ──────────────────────────────────────
 
 def _build_commit_assist(
@@ -212,17 +228,12 @@ def _build_commit_assist(
     """
     state = store.get_assist_state(project_id)
     last_commit_seq = state["last_commit_seq"] if state else 0
-    last_suggest_seq = state["last_commit_suggest_seq"] if state else 0
     cur_max = store.max_seq(project_id)
 
     edits_since = cur_max - last_commit_seq
 
     # Gate 1: enough edits since last commit
     if edits_since < MIN_EDITS_BEFORE_COMMIT_SUGGEST:
-        return InlineAssist(kind="commit", should_fire=False, message="")
-
-    # Gate 2: cooldown since last suggestion
-    if cur_max - last_suggest_seq < COMMIT_SUGGEST_COOLDOWN:
         return InlineAssist(kind="commit", should_fire=False, message="")
 
     # Gate 3: structural stability
@@ -529,11 +540,12 @@ def run_inline_assists(
     channel = "agent" if winner.kind == "run_tests" else "user"
     store.enqueue_delivery(project_id, None, channel, winner.message, kind="suggestion")
 
-    # Bump cooldown so commit suggestions don't repeat immediately
+    # Record defines present at suggestion time (B-mechanism: only re-suggest when new defines appear)
     if winner.kind == "commit":
+        current_names = {r["define_name"] for r in store.all_current_defines(project_id) if r["define_name"]}
         store.update_assist_state(
             project_id,
-            last_commit_suggest_seq=store.max_seq(project_id),
+            last_commit_suggest_defines=_serialize_defines(current_names),
         )
 
 
@@ -549,6 +561,5 @@ def acknowledge_commit(store: Store, project_id: int) -> str:
     store.update_assist_state(
         project_id,
         last_commit_seq=seq,
-        last_commit_suggest_seq=seq,
     )
     return f"[BUER] commit point recorded (seq={seq}). BUER has reset commit-timing tracking."

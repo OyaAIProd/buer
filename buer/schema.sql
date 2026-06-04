@@ -187,9 +187,10 @@ CREATE TABLE IF NOT EXISTS safety_net_dismissals (
 -- 辅助功能状态 (§4.9/§4.10/§4.11). 无 SDT 对位、纯工程辅助.
 -- Tracks commit-timing assist state per project.
 CREATE TABLE IF NOT EXISTS assist_state (
-    project_id              INTEGER PRIMARY KEY REFERENCES projects(id),
-    last_commit_seq         INTEGER DEFAULT 0,   -- seq at last user-acknowledged commit
-    last_commit_suggest_seq INTEGER DEFAULT 0    -- seq at last commit suggestion (cooldown)
+    project_id                     INTEGER PRIMARY KEY REFERENCES projects(id),
+    last_commit_seq                INTEGER DEFAULT 0,   -- seq at last user-acknowledged commit
+    last_commit_suggest_defines    TEXT DEFAULT '',     -- B-mechanism: defines present at last commit suggestion
+    last_run_tests_suggest_defines TEXT DEFAULT ''      -- B-mechanism: defines present at last run-tests suggestion
 );
 
 -- 悬空引用观测记录 (§2.8 dangling_reference signal — pre-incident persistence tracking)

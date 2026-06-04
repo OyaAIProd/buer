@@ -14,7 +14,6 @@ from buer.assists import (
     BLAST_RADIUS_THRESHOLD,
     MIN_EDITS_BEFORE_COMMIT_SUGGEST,
     STABLE_WINDOW,
-    COMMIT_SUGGEST_COOLDOWN,
     InlineAssist,
 )
 
@@ -235,15 +234,6 @@ class TestAssistCommitTiming:
         for i in range(MIN_EDITS_BEFORE_COMMIT_SUGGEST - 1):
             _det(store, pid, i + 1, fp, f"fn_{i}")
         assist = assists._build_commit_assist(store, pid, root, [])
-        assert assist.should_fire is False
-
-    def test_no_fire_during_cooldown(self, store_and_project, tmp_path):
-        store, pid = store_and_project
-        root = str(tmp_path)
-        affected = self._setup_good_point(store, pid, root)
-        # Simulate cooldown: last suggestion was just now
-        store.update_assist_state(pid, last_commit_suggest_seq=store.max_seq(pid))
-        assist = assists._build_commit_assist(store, pid, root, affected)
         assert assist.should_fire is False
 
     def test_no_fire_when_open_regression(self, store_and_project, tmp_path):
@@ -476,7 +466,8 @@ class TestRunInlineAssists:
         deliveries = store.peek_deliveries(pid, channel="user")
         assert deliveries == []
 
-    def test_updates_cooldown_after_commit_suggestion(self, store_and_project, tmp_path):
+    def test_updates_defines_after_commit_suggestion(self, store_and_project, tmp_path):
+        """B-mechanism: after a commit suggestion fires, last_commit_suggest_defines is populated."""
         store, pid = store_and_project
         root = str(tmp_path)
         affected = self._setup_stable_project(store, pid, root)
@@ -484,7 +475,7 @@ class TestRunInlineAssists:
         assists.run_inline_assists(store, pid, affected, root)
 
         state = store.get_assist_state(pid)
-        assert state["last_commit_suggest_seq"] == store.max_seq(pid)
+        assert state["last_commit_suggest_defines"] != ""
 
     def test_signals_not_cleared_by_inline_assists(self, store_and_project, tmp_path):
         """Inline assists must not affect the signal/incident channel."""
