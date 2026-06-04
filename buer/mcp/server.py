@@ -38,6 +38,7 @@ via MCP tool use, or POST to /buer/post-edit after each edit.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import threading
@@ -872,14 +873,18 @@ async def session_start_handler(request: Request) -> Response:
             project_root = project["root_path"] if project else cwd
             # Fallback: HEAD not seen before → missed commit/rollback/branch-switch
             if git_head and not store.has_snapshot_for_commit(pid, git_head):
-                _trigger_full_ingest_with_snapshot(pid, project_root, reason="session_start")
+                await _full_ingest_sync(pid, project_root, reason="session_start")
         else:
             # First time seeing (root, branch) — create project + full ingest
             pid = store.get_or_create_project(cwd, git_branch, created_at_commit=git_head)
             project_root = cwd
-            _trigger_full_ingest_with_snapshot(pid, project_root, reason="initial")
+            await _full_ingest_sync(pid, project_root, reason="initial")
     else:
         pid = store.find_project_for_file(cwd)
+        if pid is None:
+            pid = store.get_or_create_project(cwd)  # branch=None for non-git
+            project_root = cwd
+            await _full_ingest_sync(pid, project_root, reason="initial")
 
     if pid is None:
         return _hook_json("SessionStart", "")
@@ -1041,6 +1046,20 @@ def _trigger_full_ingest_with_snapshot(project_id: int, root: str, reason: str) 
         args=(project_id, root, reason),
         daemon=True,
     ).start()
+
+
+async def _full_ingest_sync(project_id: int, root: str, reason: str) -> None:
+    """Session-start: block until baseline is complete before returning.
+
+    Eliminates the race where the agent's first edit arrives before
+    determinations exist and is absorbed as create instead of modify.
+    """
+    with _full_ingest_lock:
+        if project_id in _full_ingest_in_progress:
+            return
+        _full_ingest_in_progress.add(project_id)
+    await asyncio.to_thread(_full_ingest_in_background, project_id, root, reason)
+    # _full_ingest_in_background's finally block handles discard from _full_ingest_in_progress
 
 
 def _recompute_in_background(project_id: int, files: list[str]) -> None:

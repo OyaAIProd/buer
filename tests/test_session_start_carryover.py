@@ -15,7 +15,7 @@ Coverage:
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from starlette.testclient import TestClient
@@ -205,13 +205,20 @@ class TestMultipleMessages:
         assert "X\n\nY" in _ac(r)
 
 
-# ── 7. no pid → take not called ──────────────────────────────────────────────
+# ── 7. pid gate ──────────────────────────────────────────────────────────────
 
 class TestNoPidGate:
-    def test_no_take_when_pid_none(self):
-        store = _mock_store(pid=None)
-        _client(store).post("/buer/session-start", json=_START)
-        store.take_user_deliveries.assert_not_called()
+    def test_take_called_for_new_nongit_project(self):
+        """Non-git first-visit: project auto-created, take_user_deliveries IS called.
+
+        Old behaviour (pid=None → early return) no longer applies: the non-git
+        else-branch now calls get_or_create_project and proceeds to delivery.
+        """
+        store = _mock_store(pid=None, has_gd=False)
+        store.get_or_create_project.return_value = 2
+        with patch("buer.mcp.server._full_ingest_sync", new=AsyncMock()):
+            _client(store).post("/buer/session-start", json=_START)
+        store.take_user_deliveries.assert_called()
 
     def test_no_cwd_no_take(self):
         store = _mock_store()
