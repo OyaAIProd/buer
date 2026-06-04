@@ -1571,12 +1571,12 @@ async def otlp_metrics_handler(request: Request) -> Response:
     try:
         body = await request.json()
     except Exception:
-        return Response(content="{}", status_code=200, media_type="application/json")
+        return _hook_json("PostToolUse", "")
     try:
         _parse_otlp_metrics(_get_store(), body)
     except Exception:
         pass  # telemetry ingestion must never disrupt other endpoints
-    return Response(content="{}", status_code=200, media_type="application/json")
+    return _hook_json("PostToolUse", "")
 
 
 def _otel_attrs(attr_list: list) -> dict[str, str]:
