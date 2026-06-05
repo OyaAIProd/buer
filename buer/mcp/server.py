@@ -69,12 +69,6 @@ _structure_guide_given: set[tuple[int, str]] = set()
 # Each define warned at most once per session per server process.
 _high_impact_warned: set[tuple[int, str, str]] = set()
 
-# Crash injection dedup: fingerprint → last-inject timestamp (seconds).
-# Prevents the same crash from being injected more than once within the window.
-_crash_inject_seen: dict[str, float] = {}
-_CRASH_DEDUP_WINDOW = 60.0
-_MAX_INJECT = 12  # hard cap: show at most this many suspects to prevent flood
-
 COVERAGE_THRESHOLD = 0.95
 _full_ingest_in_progress: set = set()
 _full_ingest_lock = threading.Lock()
@@ -1151,111 +1145,6 @@ async def stop_handler(request: Request) -> Response:
     )
 
 
-def _compute_crash_injection(
-    store: "Store",
-    pid: int,
-    root: str,
-    stack_fqns_set: set[str],
-) -> str:
-    """Compute crash-injection text to feed back to the agent.
-
-    Seed-priority logic:
-      a. seed_hits = changed_fqns ∩ stack_fqns → "头号嫌疑" (changed fn is on the crash path)
-      b. seed_hits empty, cone ∩ stack non-empty → "受害者" (downstream callers in crash stack)
-      c. both empty → cone top-3 by δ as fallback hint
-      Case 3: no recent changes → silent ""
-
-    No hard top-N cut: returns all candidates (typically 1-2 from intersection).
-    _MAX_INJECT=12 prevents flood on extreme stacks; "...及其他X个" appended when hit.
-    All exceptions are swallowed; returns "" on error.
-    """
-    import time
-    from buer import callgraph, influence
-
-    try:
-        sessions = store.recent_sessions(pid, 1)
-        if not sessions:
-            return ""
-        sess = sessions[0]
-        start_seq = sess["start_seq"]
-        end_seq = sess["end_seq"] if sess["end_seq"] is not None else store.max_seq(pid)
-        changes = store.changes_in_range(pid, start_seq, end_seq)
-        if not changes:
-            return ""
-
-        changed_fqns: set[str] = set()
-        for r in changes:
-            if r["define_name"]:
-                try:
-                    mod = callgraph.module_name_of(r["file_path"], root)
-                    changed_fqns.add(callgraph._lang_fqn(r["file_path"], mod, r["define_name"]))
-                except Exception:
-                    pass
-
-        if not changed_fqns:
-            return ""
-
-        cone_with_depth = influence.caller_cone_with_depth(store, pid, list(changed_fqns))
-        cone_fqns_set = set(cone_with_depth.keys())
-
-        # Dedup: fingerprint = pid + sorted stack FQNs
-        fp = f"{pid}:{','.join(sorted(stack_fqns_set))}"
-        global _crash_inject_seen
-        now = time.monotonic()
-        last = _crash_inject_seen.get(fp, 0.0)
-        if now - last < _CRASH_DEDUP_WINDOW:
-            return ""
-        _crash_inject_seen[fp] = now
-
-        def _rank_by_delta(candidates: set[str], depth_map: dict[str, int]) -> list[str]:
-            ranked = influence.cone_priority_ranks(
-                store, pid,
-                {fqn: depth_map.get(fqn, 0) for fqn in candidates},
-                top_n=_MAX_INJECT,
-            )
-            return [fqn for fqn, _ in ranked["delta"]]
-
-        def _format(header: str, candidates: set[str], depth_map: dict[str, int]) -> str:
-            total = len(candidates)
-            ranked = _rank_by_delta(candidates, depth_map) if total > 1 else list(candidates)
-            lines = [header]
-            for i, fqn in enumerate(ranked, 1):
-                lines.append(f"  {i}. {fqn}")
-            if total > _MAX_INJECT:
-                lines.append(f"  ... and {total - _MAX_INJECT} more")
-            return "\n".join(lines)
-
-        # Branch a: seed_hits — changed functions that are directly on the crash stack
-        seed_hits = changed_fqns & stack_fqns_set
-        if seed_hits:
-            return _format(
-                "[BUER] ⚡ top crash suspect (function you just edited and on the crash stack):",
-                seed_hits,
-                {fqn: 0 for fqn in seed_hits},
-            )
-
-        # Branch b: victims — downstream callers of changed functions that are in crash stack
-        victims = influence.intersect_cone_with_stack(cone_fqns_set, stack_fqns_set)
-        if victims:
-            return _format(
-                "[BUER] ⚡ crash-path suspects (on the crash stack and calling functions you just edited):",
-                victims,
-                cone_with_depth,
-            )
-
-        # Branch c: no intersection — show cone top-3 as hint
-        ranked = influence.cone_priority_ranks(store, pid, cone_with_depth, top_n=3)
-        top3 = [fqn for fqn, _ in ranked["delta"]]
-        if not top3:
-            return "[BUER] crash stack does not directly intersect the changed region."
-        lines = ["[BUER] crash stack does not directly intersect the changed region. Top 3 by priority within the influence cone (for reference):"]
-        for i, fqn in enumerate(top3, 1):
-            lines.append(f"  {i}. {fqn}")
-        return "\n".join(lines)
-    except Exception:
-        return ""
-
-
 def _is_git_commit(command: str) -> bool:
     """True if command is a git commit invocation (various forms). Conservative.
 
@@ -1476,14 +1365,9 @@ async def post_bash_handler(request: Request) -> Response:
     written to stderr always appear in tool_response.stdout, not stderr.
     Code handles both dict (real) and string (legacy/test) tool_response formats.
 
-    Two independent features:
-      1. Crash stack detection (all commands): if output contains a stack trace,
-         parse source FQNs, store them in crash_stacks (best-effort), and compute
-         cone ∩ stack suspects to inject back into agent context.
-      2. Test run recording (test commands only): run-level totals, dedup-guarded.
-
-    Response body: crash injection text (if any), otherwise empty.
-    Claude Code PostToolUse stdout injection delivers it into agent context.
+    Crash stacks come exclusively from disk artifacts (JUnit XML traceback,
+    crash.log) ingested by testscan — not from stdout (stdout is truncated/unreliable).
+    post-bash only handles test-command detection and git integration.
     """
     try:
         body = await request.json()
@@ -1494,40 +1378,12 @@ async def post_bash_handler(request: Request) -> Response:
     command = tool_input.get("command", "")
     cwd = body.get("cwd", "")
 
-    output = body.get("tool_response", "") or body.get("output", "")
-    if isinstance(output, dict):
-        output = output.get("output", "") or output.get("stdout", "")
-    output = str(output) if output else ""
-
-    if not output:
-        return _hook_json("PostToolUse", "")
-
     store = _get_store()
     pid = store.find_project_for_file(cwd) if cwd else None
     if pid is None:
         return _hook_json("PostToolUse", "")
 
     inject_text = ""
-
-    # Feature 1: crash stack detection (any command, best-effort)
-    from buer import stacktrace as _st
-    if _st.has_stack_trace(output):
-        project = store.get_project(pid)
-        root = project["root_path"] if project else (cwd or "")
-        fqns = _st.stack_fqns(output, root)
-        error_sig = _st.normalize_error_signature(output)
-        if fqns:
-            try:
-                store.insert_crash_stack(
-                    project_id=pid,
-                    seq=store.max_seq(pid) or None,
-                    stack_fqns_json=json.dumps(sorted(fqns)),
-                    command=command[:500] if command else None,
-                    error_signature=error_sig,
-                )
-            except Exception:
-                pass
-            inject_text = _compute_crash_injection(store, pid, root, fqns)
 
     # Feature 2: test-run detection (command string only — reliable, never truncated).
     # Test RESULTS come exclusively from JUnit XML (testscan), never from stdout:

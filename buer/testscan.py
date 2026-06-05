@@ -20,6 +20,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Optional
 
+from buer.stacktrace import normalize_error_signature, stack_fqns
 from buer.store import Store
 
 # ---------------------------------------------------------------------------
@@ -43,6 +44,10 @@ _COVERAGE_HEURISTICS = [
     "lcov.info",
     "coverage/lcov.info",
     ".coverage.xml",
+]
+
+_CRASH_LOG_HEURISTICS = [
+    ".pytest_cache/crash.log",   # emitted by pytest-buer micropackage (batch B)
 ]
 
 
@@ -153,11 +158,19 @@ def parse_junit_xml(path: str, root: str) -> dict:
             status = _status_from_testcase(tc)
             file_path = tc.get("file") or _file_from_classname(classname, root)
 
+            failure_text = None
+            elem = tc.find("failure")
+            if elem is None:
+                elem = tc.find("error")
+            if elem is not None:
+                failure_text = (elem.text or "").strip() or elem.get("message", "") or None
+
             cases.append({
                 "classname": classname,
                 "name": name,
                 "file_path": file_path,
                 "status": status,
+                "failure_text": failure_text,
             })
 
             if status == "passed":
@@ -614,6 +627,21 @@ def scan_test_results(store: Store, project_id: int, root: str) -> None:
                 file_path=case["file_path"],
                 status=case["status"],
             )
+            # Extract crash stack from JUnit XML failure/error traceback.
+            ft = case.get("failure_text")
+            if ft:
+                try:
+                    fqns = stack_fqns(ft, root)
+                    if fqns:
+                        store.insert_crash_stack(
+                            project_id=project_id,
+                            seq=nearest_seq,
+                            stack_fqns_json=json.dumps(sorted(fqns)),
+                            command=None,
+                            error_signature=normalize_error_signature(ft),
+                        )
+                except Exception:
+                    pass  # crash extraction must not break test ingestion
 
     # ── Coverage ──────────────────────────────────────────────────────────────
     for cov_path in locate_coverage(root):
@@ -656,6 +684,40 @@ def scan_test_results(store: Store, project_id: int, root: str) -> None:
             project_id,
             seq=None,
             source_path=cov_path,
+            source_mtime=mtime,
+            passed=0,
+            failed=0,
+            skipped=0,
+        )
+
+    # ── crash.log (emitted by pytest-buer micropackage, batch B) ─────────────
+    # Scan not found → silent skip (normal until batch B plugin is installed).
+    for hint in _CRASH_LOG_HEURISTICS:
+        crash_log_path = os.path.join(root, hint)
+        if not os.path.isfile(crash_log_path):
+            continue
+        mtime = _mtime_iso(crash_log_path)
+        if store.test_run_already_ingested(project_id, crash_log_path, mtime):
+            continue
+        try:
+            text = open(crash_log_path, encoding="utf-8", errors="ignore").read()
+            fqns = stack_fqns(text, root)
+            if fqns:
+                nearest_seq = store.nearest_seq_for_mtime(project_id, mtime)
+                store.insert_crash_stack(
+                    project_id=project_id,
+                    seq=nearest_seq,
+                    stack_fqns_json=json.dumps(sorted(fqns)),
+                    command=None,
+                    error_signature=normalize_error_signature(text),
+                )
+        except Exception:
+            pass  # crash.log extraction must not break scan
+        # Mark as ingested so we don't re-process this version.
+        store.insert_test_run(
+            project_id,
+            seq=None,
+            source_path=crash_log_path,
             source_mtime=mtime,
             passed=0,
             failed=0,

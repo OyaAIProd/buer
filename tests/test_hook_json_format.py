@@ -275,21 +275,6 @@ class TestPostBashJsonFormat:
             r = _client(store).post("/buer/post-bash", json=self._BASH_NOOP)
         assert r.json() == {}
 
-    def test_crash_inject_returns_hook_specific_output(self):
-        inject = "[BUER] ⚡ top crash suspect: foo.bar"
-        store = _mock_store()
-        from buer import stacktrace as _st
-        with patch.object(_st, "has_stack_trace", return_value=True), \
-             patch.object(_st, "stack_fqns", return_value={"foo::bar"}), \
-             patch.object(_st, "normalize_error_signature", return_value="err"), \
-             patch("buer.mcp.server._compute_crash_injection", return_value=inject), \
-             patch("buer.mcp.server._is_git_commit", return_value=False), \
-             patch("buer.mcp.server._is_git_rollback", return_value=False), \
-             patch("buer.mcp.server._is_git_branch_switch", return_value=None):
-            r = _client(store).post("/buer/post-bash", json=self._BASH_NOOP)
-        body = r.json()
-        assert body["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
-        assert body["hookSpecificOutput"]["additionalContext"] == inject
 
 
 # ── stop regression ───────────────────────────────────────────────────────────
