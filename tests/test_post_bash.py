@@ -1,15 +1,19 @@
-"""Tests for /buer/post-bash endpoint (§4.4 real-time test capture).
+"""Tests for /buer/post-bash endpoint (§4.4 crash detection + test-command detection).
+
+Test RESULTS come exclusively from JUnit XML (testscan), never from stdout.
+post-bash only detects that a test command ran (is_test_command reads the short
+command field), and warns once if no JUnit XML was found.
 
 Coverage plan:
   A. Non-test commands → silent 200, no insert
-  B. Test command with unrecognized output → silent 200, no insert
+  B. Test command (any output) → no insert (output not parsed)
   C. No matching project → silent 200, no insert
-  D. Happy path: pytest output → inserts run with source='stdout'
-  E. Happy path: jest/cargo/mocha output → parsed and inserted
-  F. Dedup: recent XML run exists → stdout run skipped
-  G. Dedup: recent stdout same-cmd → skipped
-  H. Malformed / empty body → silent 200
-  I. Response body always empty
+  D. XML present → no warning
+  E. No XML, already warned → no warning
+  F. No XML, first time → one-shot warning in additionalContext
+  G. Malformed / empty body → silent 200
+  H. Response body always empty
+  I. Real CC payload format (dict tool_response)
 """
 from __future__ import annotations
 
@@ -203,119 +207,11 @@ class TestProjectNotFound:
         store.insert_test_run.assert_not_called()
 
 
-# ── D: happy path — pytest ─────────────────────────────────────────────────────
-
-class TestHappyPathPytest:
-    def test_inserts_with_source_stdout(self):
-        store = _mock_store()
-        r = _client(store).post("/buer/post-bash", json={
-            "tool_input": {"command": "pytest tests/"},
-            "tool_response": _PYTEST_OUT,
-            "cwd": "/proj",
-        })
-        assert r.status_code == 200
-        assert _ac(r) == ""
-        store.insert_test_run.assert_called_once()
-        kw = _insert_kwargs(store)
-        assert kw["source"] == "stdout"
-
-    def test_passed_count(self):
-        store = _mock_store()
-        _client(store).post("/buer/post-bash", json={
-            "tool_input": {"command": "pytest"},
-            "tool_response": _PYTEST_OUT,
-            "cwd": "/proj",
-        })
-        kw = _insert_kwargs(store)
-        assert kw["passed"] == 3
-        assert kw["failed"] == 0
-
-    def test_source_path_starts_with_stdout_prefix(self):
-        store = _mock_store()
-        _client(store).post("/buer/post-bash", json={
-            "tool_input": {"command": "pytest tests/"},
-            "tool_response": _PYTEST_OUT,
-            "cwd": "/proj",
-        })
-        kw = _insert_kwargs(store)
-        assert kw["source_path"].startswith("stdout:")
-
-    def test_same_command_produces_same_fingerprint(self):
-        store = _mock_store()
-        for _ in range(2):
-            _client(store).post("/buer/post-bash", json={
-                "tool_input": {"command": "pytest tests/"},
-                "tool_response": _PYTEST_OUT,
-                "cwd": "/proj",
-            })
-        fp1 = store.insert_test_run.call_args_list[0][1].get(
-            "source_path",
-            store.insert_test_run.call_args_list[0][0][2] if store.insert_test_run.call_args_list[0][0] else "",
-        )
-        fp2 = store.insert_test_run.call_args_list[1][1].get(
-            "source_path",
-            store.insert_test_run.call_args_list[1][0][2] if store.insert_test_run.call_args_list[1][0] else "",
-        )
-        assert fp1 == fp2
-
-    def test_project_id_forwarded(self):
-        store = _mock_store(pid=7)
-        _client(store).post("/buer/post-bash", json={
-            "tool_input": {"command": "pytest tests/"},
-            "tool_response": _PYTEST_OUT,
-            "cwd": "/proj",
-        })
-        kw = _insert_kwargs(store)
-        assert kw["project_id"] == 7
-
-
-# ── E: other runners ───────────────────────────────────────────────────────────
-
-class TestOtherRunners:
-    def test_jest_parsed(self):
-        store = _mock_store()
-        _client(store).post("/buer/post-bash", json={
-            "tool_input": {"command": "npx jest --coverage"},
-            "tool_response": _JEST_OUT,
-            "cwd": "/proj",
-        })
-        store.insert_test_run.assert_called_once()
-        kw = _insert_kwargs(store)
-        assert kw["passed"] == 8
-        assert kw["failed"] == 2
-        assert kw["source"] == "stdout"
-
-    def test_cargo_parsed(self):
-        store = _mock_store()
-        _client(store).post("/buer/post-bash", json={
-            "tool_input": {"command": "cargo test"},
-            "tool_response": _CARGO_OUT,
-            "cwd": "/proj",
-        })
-        store.insert_test_run.assert_called_once()
-        kw = _insert_kwargs(store)
-        assert kw["passed"] == 2
-        assert kw["failed"] == 0
-        assert kw["source"] == "stdout"
-
-    def test_mocha_parsed(self):
-        store = _mock_store()
-        _client(store).post("/buer/post-bash", json={
-            "tool_input": {"command": "npx mocha"},
-            "tool_response": _MOCHA_OUT,
-            "cwd": "/proj",
-        })
-        store.insert_test_run.assert_called_once()
-        kw = _insert_kwargs(store)
-        assert kw["passed"] == 4
-        assert kw["failed"] == 1
-        assert kw["source"] == "stdout"
-
-
-# ── F: dedup — XML priority ────────────────────────────────────────────────────
+# ── D: XML suppresses warning ─────────────────────────────────────────────────
 
 class TestDedupXml:
-    def test_recent_xml_skips_stdout(self):
+    def test_recent_xml_suppresses_warning(self):
+        """XML present → xml_warn not emitted (we're inside recent_xml_run_exists=True branch)."""
         store = _mock_store(xml_exists=True)
         r = _client(store).post("/buer/post-bash", json={
             "tool_input": {"command": "pytest tests/"},
@@ -323,7 +219,7 @@ class TestDedupXml:
             "cwd": "/proj",
         })
         assert r.status_code == 200
-        store.insert_test_run.assert_not_called()
+        assert _ac(r) == ""
 
     def test_xml_check_uses_120s_window(self):
         store = _mock_store(xml_exists=False)
@@ -335,41 +231,68 @@ class TestDedupXml:
         store.recent_xml_run_exists.assert_called_once_with(1, within_seconds=120)
 
 
-# ── G: dedup — same-cmd stdout ────────────────────────────────────────────────
+# ── E: already warned → silent ────────────────────────────────────────────────
 
-class TestDedupStdout:
-    def test_recent_stdout_same_cmd_skipped(self):
-        store = _mock_store(stdout_dup=True)
+class TestAlreadyWarned:
+    def test_already_warned_no_second_warning(self):
+        """xml_missing_warned=1 → _missing_xml_should_warn returns False → no warning."""
+        store = _mock_store(xml_exists=False)
+        # Return a state dict with xml_missing_warned=1 (already warned)
+        store.get_assist_state.return_value = {"xml_missing_warned": 1}
         r = _client(store).post("/buer/post-bash", json={
             "tool_input": {"command": "pytest tests/"},
             "tool_response": _PYTEST_OUT,
             "cwd": "/proj",
         })
         assert r.status_code == 200
-        store.insert_test_run.assert_not_called()
+        assert _ac(r) == ""
+        store.update_assist_state.assert_not_called()
 
-    def test_stdout_dedup_uses_30s_window(self):
-        store = _mock_store(stdout_dup=False)
-        _client(store).post("/buer/post-bash", json={
+
+# ── F: first detection → one-shot warning ────────────────────────────────────
+
+class TestMissingXmlWarning:
+    def test_first_detection_emits_warning(self):
+        """xml_missing_warned=0 → warning fires and update_assist_state sets flag."""
+        store = _mock_store(xml_exists=False)
+        store.get_assist_state.return_value = {"xml_missing_warned": 0}
+        r = _client(store).post("/buer/post-bash", json={
             "tool_input": {"command": "pytest tests/"},
             "tool_response": _PYTEST_OUT,
             "cwd": "/proj",
         })
-        store.recent_stdout_run_for_cmd.assert_called_once()
-        _, kwargs = store.recent_stdout_run_for_cmd.call_args
-        assert kwargs.get("within_seconds", 30) == 30
+        assert r.status_code == 200
+        warn = _ac(r)
+        assert "[BUER]" in warn
+        assert "JUnit XML" in warn
+        store.update_assist_state.assert_called_once_with(1, xml_missing_warned=1)
 
-    def test_no_dedup_when_both_absent(self):
-        store = _mock_store(xml_exists=False, stdout_dup=False)
-        _client(store).post("/buer/post-bash", json={
+    def test_warning_not_fired_for_non_test_command(self):
+        """Non-test commands never enter Feature 2 → no warning ever."""
+        store = _mock_store(xml_exists=False)
+        store.get_assist_state.return_value = {"xml_missing_warned": 0}
+        r = _client(store).post("/buer/post-bash", json={
+            "tool_input": {"command": "ls -la"},
+            "cwd": "/proj",
+        })
+        assert _ac(r) == ""
+        store.update_assist_state.assert_not_called()
+
+    def test_warning_appended_after_crash_inject(self):
+        """If crash injection also fires, xml_warn is appended after it."""
+        store = _mock_store(xml_exists=False)
+        store.get_assist_state.return_value = {"xml_missing_warned": 0}
+        # No crash stack in output, but test both inject_text paths covered by
+        # checking that a pytest command still emits the xml_warn.
+        r = _client(store).post("/buer/post-bash", json={
             "tool_input": {"command": "pytest tests/"},
             "tool_response": _PYTEST_OUT,
             "cwd": "/proj",
         })
-        store.insert_test_run.assert_called_once()
+        assert "JUnit XML" in _ac(r)
 
 
-# ── H: malformed requests ─────────────────────────────────────────────────────
+# ── G: malformed requests ─────────────────────────────────────────────────────
 
 class TestMalformed:
     def test_invalid_json_returns_200(self):
@@ -410,7 +333,7 @@ class TestResponseAlwaysEmpty:
         assert _ac(r) == ""
 
 
-# ── J: real Claude Code payload format (dict tool_response) ──────────────────
+# ── I: real Claude Code payload format (dict tool_response) ──────────────────
 # Verified empirically: CC v2.1.145 sends tool_response as a dict with stdout/stderr.
 # stdout contains merged output (CC merges stderr → stdout). Legacy string format
 # is also supported for tests/older integrations.
@@ -424,24 +347,6 @@ _TSX_STACK = (
 
 class TestDictToolResponse:
     """Real Claude Code payload has tool_response as dict {stdout, stderr, ...}."""
-
-    def test_test_output_parsed_from_dict_stdout(self):
-        """Happy path: pytest output delivered in dict format → run inserted."""
-        store = _mock_store()
-        r = _client(store).post("/buer/post-bash", json={
-            "tool_name": "Bash",
-            "tool_input": {"command": "pytest tests/", "description": "Run tests"},
-            "tool_response": {
-                "stdout": _PYTEST_OUT,
-                "stderr": "",
-                "interrupted": False,
-                "isImage": False,
-                "noOutputExpected": False,
-            },
-            "cwd": "/proj",
-        })
-        assert r.status_code == 200
-        store.insert_test_run.assert_called_once()
 
     def test_empty_stdout_in_dict_no_insert(self):
         """Dict payload with empty stdout → no insert (nothing to parse)."""

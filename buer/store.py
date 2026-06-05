@@ -56,6 +56,7 @@ class Store:
             "ALTER TABLE determinations ADD COLUMN start_line INTEGER DEFAULT 0",
             "ALTER TABLE determinations ADD COLUMN end_line INTEGER DEFAULT 0",
             "ALTER TABLE pending_deliveries ADD COLUMN kind TEXT NOT NULL DEFAULT 'alert' CHECK(kind IN ('alert', 'suggestion'))",
+            "ALTER TABLE assist_state ADD COLUMN xml_missing_warned INTEGER DEFAULT 0",
         ):
             try:
                 self.con.execute(stmt)

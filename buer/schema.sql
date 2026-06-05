@@ -190,7 +190,8 @@ CREATE TABLE IF NOT EXISTS assist_state (
     project_id                     INTEGER PRIMARY KEY REFERENCES projects(id),
     last_commit_seq                INTEGER DEFAULT 0,   -- seq at last user-acknowledged commit
     last_commit_suggest_defines    TEXT DEFAULT '',     -- B-mechanism: defines present at last commit suggestion
-    last_run_tests_suggest_defines TEXT DEFAULT ''      -- B-mechanism: defines present at last run-tests suggestion
+    last_run_tests_suggest_defines TEXT DEFAULT '',     -- B-mechanism: defines present at last run-tests suggestion
+    xml_missing_warned             INTEGER DEFAULT 0    -- one-shot "test ran but no JUnit XML" warning flag
 );
 
 -- 悬空引用观测记录 (§2.8 dangling_reference signal — pre-incident persistence tracking)

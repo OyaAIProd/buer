@@ -53,7 +53,7 @@ from buer import assists, boundary, delivery, git_utils, health, navigator, pars
 from buer.callgraph import _SRC_PATTERNS
 from buer.navigator import THETA_CLARITY_NODES
 from buer.reconcile import rebuild_call_edges_full, reconcile, reconcile_against_disk
-from buer.stdout_parser import cmd_fingerprint, is_test_command, parse_test_output
+from buer.stdout_parser import is_test_command
 from buer.store import Store
 
 # ── module-level state (overridable for tests) ───────────────────────────────
@@ -1436,6 +1436,17 @@ def _is_git_branch_switch(command: str) -> str | None:
     return None
 
 
+def _missing_xml_should_warn(store, pid: int) -> bool:
+    """One-shot warning: True only the first time a test ran without JUnit XML.
+    Permanently silent after warning once (configuring XML stops the warning;
+    no reset — avoids nagging on a stray no-XML scan window)."""
+    state = store.get_assist_state(pid)
+    if state and state["xml_missing_warned"]:
+        return False
+    store.update_assist_state(pid, xml_missing_warned=1)
+    return True
+
+
 @mcp.custom_route("/buer/post-bash", methods=["POST"])
 async def post_bash_handler(request: Request) -> Response:
     """PostToolUse Bash hook endpoint — crash detection + test capture (§4.4 opt-in).
@@ -1518,33 +1529,26 @@ async def post_bash_handler(request: Request) -> Response:
                 pass
             inject_text = _compute_crash_injection(store, pid, root, fqns)
 
-    # Feature 2: test run recording (test commands only)
+    # Feature 2: test-run detection (command string only — reliable, never truncated).
+    # Test RESULTS come exclusively from JUnit XML (testscan), never from stdout:
+    # stdout is a truncated payload field (CC head-truncates at 10K with a green-biased
+    # sample on failure). Here we only DETECT that a test command ran (is_test_command
+    # reads the short command field). If no JUnit XML was scanned recently, warn ONCE
+    # that test-aware signals (regression/debug_loop/test-crash) are inactive without XML.
     if command and is_test_command(command):
-        result = parse_test_output(command, output)
-        if result is not None:
-            if not store.recent_xml_run_exists(pid, within_seconds=120):
-                fp = cmd_fingerprint(command)
-                if not store.recent_stdout_run_for_cmd(pid, fp, within_seconds=30):
-                    run_id = store.insert_test_run(
-                        project_id=pid,
-                        seq=store.max_seq(pid) or None,
-                        source_path=f"stdout:{fp}",
-                        source_mtime=datetime.now(timezone.utc).strftime(
-                            "%Y-%m-%d %H:%M:%S"
-                        ),
-                        passed=result["passed"],
-                        failed=result["failed"],
-                        skipped=result["skipped"],
-                        source="stdout",
-                    )
-                    for c in result.get("cases", []):
-                        try:
-                            store.insert_test_case(
-                                run_id, c["classname"], c["name"],
-                                c.get("file_path"), c["status"],
-                            )
-                        except Exception:
-                            pass  # per-case failure must not break post_bash
+        if not store.recent_xml_run_exists(pid, within_seconds=120):
+            if _missing_xml_should_warn(store, pid):
+                xml_warn = (
+                    "[BUER] a test run was detected, but no JUnit XML was found. "
+                    "BUER reads test results only from JUnit XML (command output is unreliable/truncated), "
+                    "so regression / debug_loop / test-crash detection are NOT active. "
+                    "Install the pytest-buer plugin (auto-emits XML) or configure your test runner "
+                    "to write junit.xml (e.g. pytest --junitxml=.pytest_cache/junit.xml)."
+                )
+                if inject_text:
+                    inject_text += "\n" + xml_warn
+                else:
+                    inject_text = xml_warn
 
     # Feature 3: git commit → create snapshot (git integration batch 2)
     if command and _is_git_commit(command):
