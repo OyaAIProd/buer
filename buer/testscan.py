@@ -714,6 +714,8 @@ def scan_test_results(store: Store, project_id: int, root: str) -> None:
         except Exception:
             pass  # crash.log extraction must not break scan
         # Mark as ingested so we don't re-process this version.
+        # source="crash_log" (not default "junit_xml") so recent_xml_run_exists
+        # doesn't treat this as a real JUnit XML run and suppress xml_warn.
         store.insert_test_run(
             project_id,
             seq=None,
@@ -722,4 +724,5 @@ def scan_test_results(store: Store, project_id: int, root: str) -> None:
             passed=0,
             failed=0,
             skipped=0,
+            source="crash_log",
         )
