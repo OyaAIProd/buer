@@ -60,6 +60,37 @@ Quick check once it's up:
 curl -s http://127.0.0.1:7777/buer/health | python3 -m json.tool
 ```
 
+## How BUER collects data (reliable disk-only judgment)
+
+BUER never reads test results or crash info from command output (stdout): Claude Code
+truncates hook payloads at 10K with a front-biased sample, and does not fire PostToolUse
+on failed commands. All judgment data comes from disk files and short, never-truncated
+hook fields:
+
+**Always-available self-contained core** (works with no git, no tests, no XML):
+structural drift — define_loop / stuck_region / churn / boundary — is detected by reading
+your source files from disk on every edit. This is BUER's reliable foundation and carries
+mid-execution intervention; it needs nothing external.
+
+**Test-aware layer (requires JUnit XML)**: regression, debug_loop, and test-crash
+correlation read test results and tracebacks exclusively from JUnit XML on disk. Without
+XML these signals are inactive (BUER warns once when it detects a test ran but found no XML).
+To enable them, install the buer-runtime package in your project venv (auto-emits XML and
+crash.log — see below), or configure your test runner to write junit.xml
+(e.g. pytest --junitxml=.pytest_cache/junit.xml).
+
+**Crash correlation**: test crashes come from the JUnit XML traceback; non-test Python
+crashes come from a crash.log written by buer-runtime's excepthook. Both are complete
+on-disk files — never truncated stdout.
+
+**Why not PostToolUseFailure**: BUER does not use the PostToolUseFailure hook. Its error
+payload is head-truncated (10K) with a green-biased sample, so it cannot reliably convey
+which tests failed. Failure data comes from JUnit XML instead.
+
+(buer-runtime install: a zero-dependency package in your project venv that auto-emits
+JUnit XML and crash.log. `pip install buer-runtime` in the venv where your tests run.
+The BUER server stays isolated — buer-runtime does not pull server dependencies.)
+
 ## 3. Keep it running (recommended)
 
 BUER must run continuously to monitor edits and collect cost data. Use your platform's
